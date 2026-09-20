@@ -1,0 +1,47 @@
+// OS² 通用消息 IDL（DDS）— M0 样例，随《ICD》/《协议规范集》冻结演进。
+// 对齐《架构说明》§6.2 标准命令/回执要素（Command/Reply/Event/Metric）。
+module os2 {
+  module common {
+
+    struct Command {
+      string command_id;      // 命令唯一ID
+      string target_id;       // 目标对象
+      string command_type;    // 操作类型
+      string args_json;       // 参数（JSON）
+      string operator;        // 操作者
+      string auth_context;    // 权限上下文
+      unsigned long long deadline_ms;
+      string trace_id;
+    };
+
+    struct Reply {
+      string command_id;
+      string result;          // success/failed
+      string reason_code;     // 契约错误码（OS2-xxxx，见 error-codes；M1 由 long 收敛为 string）
+      string effective_value;
+      string current_state;
+      unsigned long long cost_ms;
+      unsigned long long timestamp;
+      string trace_id;
+    };
+
+    struct Event {
+      string source;
+      string event_type;
+      string level;           // info/warn/error/critical
+      string state;
+      string reason;
+      unsigned long long timestamp;
+      string trace_id;
+    };
+
+    struct Metric {
+      string metric_name;
+      string labels_json;
+      double value;
+      unsigned long long timestamp;
+      string quality;
+    };
+
+  };
+};

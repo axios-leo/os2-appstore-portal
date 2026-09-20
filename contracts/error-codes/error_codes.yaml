@@ -1,0 +1,26 @@
+# OS² 错误码样例（权威源：受控资料库《错误码全集》）
+# 格式 code: {symbol, domain, message, severity}
+# symbol = C++ errc:: 常量名（契约代码生成用，M1 起 contracts.hpp 由此生成）
+errors:
+  OS2-0000: { symbol: OK,                 domain: common,    message: "OK",             severity: info }
+  OS2-0002: { symbol: MSG_TYPE_REJECTED,  domain: common,    message: "报文类型/格式校验失败", severity: warn }
+  OS2-0003: { symbol: MSG_SIZE_EXCEEDED,  domain: common,    message: "报文/字段/键数越尺寸上界", severity: warn }
+  OS2-1001: { symbol: SVC_NOT_REGISTERED, domain: registry,  message: "服务未注册",       severity: error }
+  OS2-1002: { symbol: SVC_LEASE_EXPIRED,  domain: registry,  message: "心跳租约过期，实例保留并置 down", severity: warn }
+  OS2-1003: { symbol: SVC_ID_INVALID,      domain: registry,  message: "运行服务标识非法", severity: error }
+  OS2-1004: { symbol: SVC_ENDPOINT_REQUIRED, domain: registry, message: "注册端点缺失",    severity: error }
+  OS2-1005: { symbol: REGISTRY_NOT_LEADER, domain: registry,  message: "注册中心不是当前主", severity: warn }
+  OS2-1006: { symbol: REGISTRY_INTERNAL,   domain: registry,  message: "注册内部错误",     severity: error }
+  OS2-2001: { symbol: DEV_OFFLINE,        domain: device,    message: "设备离线",         severity: error }
+  OS2-2002: { symbol: DEV_INTERLOCK,      domain: device,    message: "互锁校验失败",     severity: critical }
+  OS2-3001: { symbol: SCH_CHAIN_INVALID,  domain: scheduler, message: "服务链非法",       severity: error }
+  OS2-3002: { symbol: SCH_E2E_TIMEOUT,    domain: scheduler, message: "端到端超时",       severity: warn }
+  OS2-3003: { symbol: SCH_RESOURCE_EXHAUSTED, domain: scheduler, message: "资源预留被拒",  severity: warn }
+  OS2-3004: { symbol: SCH_MISROUTED,      domain: scheduler, message: "回执来源与落位不符", severity: error }
+  OS2-4001: { symbol: SEC_DENIED,         domain: security,  message: "越权操作被拒",     severity: critical }
+  OS2-6001: { symbol: WL_INSTANCE_UNKNOWN, domain: workload,  message: "实例不在本节点清单内", severity: error }
+  OS2-6002: { symbol: WL_SPAWN_FAILED,     domain: workload,  message: "服务进程拉起失败", severity: error }
+  OS2-6003: { symbol: WL_NOT_RUNNING,      domain: workload,  message: "进程未在运行", severity: warn }
+  OS2-6004: { symbol: WL_ACTION_UNKNOWN,   domain: workload,  message: "未知的进程控制动作", severity: warn }
+  OS2-5001: { symbol: MODEL_IMPACT_INPUT_INVALID, domain: model, message: "影响查询输入未知或非法", severity: warn }
+  OS2-5002: { symbol: PROFILE_MODEL_DRIFT, domain: model, message: "Profile 与模型权威事实不一致", severity: error }

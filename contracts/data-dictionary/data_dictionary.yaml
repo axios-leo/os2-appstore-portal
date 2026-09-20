@@ -1,0 +1,307 @@
+# OS² 主数据字典样例（权威源：受控资料库《主数据字典》）
+# enums.<name>.cpp_type 存在时参与契约代码生成（C++ 枚举镜像由此生成）：
+#   values[] = { zh 中文名, token 线上传输词元, cpp C++ 枚举子 }
+#   from_string: true → 生成 <name>_from(token) 解析函数（未知值回落末项）
+enums:
+  domain:
+    cpp_type: Domain
+    comment: "采控/计算/人机交互/运维"
+    values:
+      - { zh: 采控,     token: cai,     cpp: Cai }
+      - { zh: 计算,     token: compute, cpp: Compute }
+      - { zh: 人机交互, token: hmi,     cpp: Hmi }
+      - { zh: 运维,     token: ops,     cpp: Ops }
+  criticality:
+    cpp_type: Criticality
+    comment: "关键性等级"
+    from_string: true
+    values:
+      - { zh: A, token: A, cpp: A }
+      - { zh: B, token: B, cpp: B }
+      - { zh: C, token: C, cpp: C }
+      - { zh: D, token: D, cpp: D }
+  health:
+    cpp_type: Health
+    comment: "健康状态"
+    values:
+      - { zh: 正常, token: ok,       cpp: Ok }
+      - { zh: 降级, token: degraded, cpp: Degraded }
+      - { zh: 故障, token: down,     cpp: Down }
+  dataLevel:   # 暂无 C++ 镜像（无 cpp_type 即不生成）
+    values:
+      - { zh: 公开, token: public }
+      - { zh: 内部, token: internal }
+      - { zh: 秘密, token: confidential }
+  boolean:
+    values:
+      - { zh: 是, token: "true" }
+      - { zh: 否, token: "false" }
+  processState:            # RFC-0017：进程生命周期（有意做浅，见 RFC §3）
+    values:
+      - { zh: 已计划, token: planned }
+      - { zh: 启动中, token: starting }
+      - { zh: 运行中, token: running }
+      - { zh: 停止中, token: stopping }
+      - { zh: 已退出, token: exited }
+      - { zh: 启动失败, token: failed }
+  processReporter:         # RFC-0017：谁说的要能分清
+    values:
+      - { zh: 执行管理器, token: em }
+      - { zh: 服务进程,   token: service }
+  processAction:
+    values:
+      - { zh: 启动, token: start }
+      - { zh: 中止, token: stop }
+      - { zh: 重启, token: restart }
+  chainStepState:
+    values:
+      - { zh: 已派发, token: dispatched }
+      - { zh: 已完成, token: completed }
+      - { zh: 失败, token: failed }
+fields:
+  service_id:  { type: string, desc: "服务唯一标识" }
+  device_code: { type: string, desc: "统一多级编码（详见主数据字典）" }
+  domain:      { type: enum,   enum: domain, desc: "所属域" }
+  criticality: { type: enum,   enum: criticality, desc: "关键性等级" }
+  trace_id:    { type: string, desc: "跨域调用链追踪ID" }
+# ── 逐主题 kv 载荷键（RFC-0003，v1.3.0，2026-07-15）───────────────────────
+# 把冻结清单（reviews/2026-07-10-contract-freeze-review §3）已冻结的键集收编为
+# 机读契约（真相源一本化：页面/第三方工具由此渲染消息结构，不再读评审文档）。
+# 结构：messages.<TopicName>（名与 topics.yaml 一致，门禁校验）；
+#   req=请求键 rep=应答键 pub=发布事件键；每键 { key, type, desc, opt?, pattern? }
+#   opt: true=可选键；pattern: true=动态键模板（<node> 为节点名占位）。
+# 未登记主题=通用命令/回执要素（idl/os2_common.idl Command/Reply/Event/Metric）；
+# 新增键集走冻结清单 §4 minor 流程（RFC → 改本段 → 回填清单）。
+# ── 类型效力升级（RFC-0005，v1.5.0，2026-07-18）─────────────────────────────
+# 本段 type/opt/pattern 自 v1.5.0 起 **从"文档"升"运行时可执行"**：gen_contracts.py
+# 由本段生成 msgspec 校验规则表（os2::msgspec，contracts.hpp），平台 MsgValidator
+# （platform/msg_validator.hpp）据表对进站 Msg 做边界类型化/尺寸/失败拒收校验。
+# 键集/类型 **不新增、不改语义**——仅效力升级；校验 opt-in 逐主题（bus.validate）、
+# 缺省关＝未启用主题行为零变化。type: number 者启用后走严格数值解析（拒静默 0）。
+messages:
+  ProcessReport:                        # RFC-0017：进程生命周期上报
+    frozen_ref: "RFC-0017 §2.1"
+    pub:
+      - { key: node_id,     type: string, desc: "所在节点" }
+      - { key: instance_id, type: string, desc: "运行实例标识；与 ServiceRegister 同一个，不另造标识" }
+      - { key: service_id,  type: string, desc: "逻辑服务标识" }
+      - { key: state,       type: enum, enum: processState, desc: "进程状态" }
+      - { key: reporter,    type: enum, enum: processReporter, desc: "谁报的：em 只证明 fork 成功，service 才证明起来了" }
+      - { key: ts,          type: string, desc: "毫秒时戳" }
+      - { key: pid,         type: string, desc: "进程号；未起时为空", opt: true }
+      - { key: exit_code,   type: string, desc: "退出码；仅 exited/failed 有值", opt: true }
+      - { key: manifest,    type: string, desc: "部署清单实体 id；EM 报时必填", opt: true }
+  ProcessControl:                       # RFC-0017：进程启停控制
+    frozen_ref: "RFC-0017 §2.2"
+    req:
+      - { key: node_id,     type: string, desc: "目标节点" }
+      - { key: instance_id, type: string, desc: "目标运行实例" }
+      - { key: action,      type: enum, enum: processAction, desc: "start/stop/restart" }
+    rep:
+      - { key: result,      type: string, desc: "success/failed" }
+      - { key: reason,      type: string, desc: "失败原因；成功为空" }
+      - { key: reason_code, type: string, desc: "稳定机器错误码；成功为 OS2-0000" }
+  ServiceRegister:                      # RFC-0009：注册运行身份三元组
+    frozen_ref: "RFC-0009 §3.1 + RFC-0010 §2"
+    req:
+      - { key: service_id,  type: string, desc: "逻辑服务标识" }
+      - { key: node_id,     type: string, desc: "部署节点标识；实例级判分键组成部分" }
+      - { key: instance_id, type: string, desc: "运行实例标识" }
+      - { key: endpoint,    type: string, desc: "可调用端点" }
+      - { key: version,     type: string, desc: "服务版本", opt: true }
+      - { key: domain,      type: enum, enum: domain, desc: "所属域", opt: true }
+      - { key: criticality, type: enum, enum: criticality, desc: "关键性；决定分级租约", opt: true }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: reason,   type: string, desc: "拒绝原因；成功时为空" }
+      - { key: reason_code, type: string, desc: "稳定机器错误码；成功为 OS2-0000" }
+      - { key: epoch,    type: string, desc: "注册中心纪元；成功时返回", opt: true }
+  ServiceHeartbeat:                     # RFC-0009：服务端接收时刻续租
+    frozen_ref: "RFC-0009 §3.2"
+    pub:
+      - { key: service_id,  type: string, desc: "逻辑服务标识" }
+      - { key: node_id,     type: string, desc: "部署节点标识" }
+      - { key: instance_id, type: string, desc: "运行实例标识" }
+      - { key: timestamp,   type: number, desc: "参与方来源时间戳；仅作原始证据，不参与 OS 过期判定" }
+      - { key: health,      type: enum, enum: health, desc: "参与方自报健康状态" }
+  ResourceReport:                       # 冻结清单 §3.1（13 键）
+    frozen_ref: "freeze-review §3.1"
+    pub:
+      - { key: node_id,       type: string, desc: "节点标识" }
+      - { key: domain,        type: enum, enum: domain, desc: "所属域" }
+      - { key: cpu_total,     type: number, desc: "CPU 总量（核）" }
+      - { key: cpu_used,      type: number, desc: "CPU 已用（核）" }
+      - { key: mem_total_mib, type: number, desc: "内存总量 MiB" }
+      - { key: mem_used_mib,  type: number, desc: "内存已用 MiB" }
+      - { key: os,            type: string, desc: "OS 展示名（QNX/RTOS/Linux）" }
+      - { key: health,        type: enum, enum: health, desc: "健康状态" }
+      - { key: ts,            type: number, desc: "上报时间戳 ms" }
+      - { key: container_id,  type: string, desc: "部署元数据：容器短 ID" }
+      - { key: boot_state,    type: string, desc: "部署元数据：启动阶段" }
+      - { key: modules,       type: string, desc: "部署元数据：装载模块清单" }
+      - { key: payload,       type: string, desc: "部署元数据：载荷名" }
+  ServiceChainSubmit:                   # RFC-0012 / Q-032：服务链提交与同步终态结果
+    frozen_ref: "RFC-0012 §2"
+    req:
+      - { key: sc_xml,   type: string, desc: "完整 SC-XML 文本；必须符合 service_chain.xsd 且通过 DAG 校验" }
+      - { key: trace_id, type: string, desc: "调用方提供的追踪 ID；省略时由调度器生成", opt: true }
+    rep:
+      - { key: chain_id,    type: string, desc: "SC-XML 链 ID；解析前失败时为空字符串" }
+      - { key: trace_id,    type: string, desc: "本次提交的追踪 ID" }
+      - { key: success,     type: enum, enum: boolean, desc: "整链终态结果 true/false；不是仅表示接收的 ACK" }
+      - { key: reason_code, type: string, desc: "成功为 OS2-0000；失败为造成终态的稳定 OS2 错误码" }
+      - { key: cost_ms,     type: number, desc: "调度器节点以单调时钟计算的本次同步执行耗时 ms" }
+  ChainStepEvent:                       # RFC-0012：调度器逐步派发正式事实
+    frozen_ref: "freeze-review §3.3 + RFC-0012 §2"
+    pub:
+      - { key: chain_id,      type: string, desc: "链模型 ID" }
+      - { key: trace_id,      type: string, desc: "跨域调用链追踪ID（证据贯穿）" }
+      - { key: seq,           type: number, desc: "步序号" }
+      - { key: total,         type: number, desc: "链总步数" }
+      - { key: chain_node_id, type: string, desc: "链内节点 ID（SC-XML node）" }
+      - { key: service,       type: string, desc: "派发子服务名" }
+      - { key: assigned_node, type: string, desc: "落位节点（候选择优结果）" }
+      - { key: criticality,   type: enum, enum: criticality, desc: "步关键性" }
+      - { key: state,         type: enum, enum: chainStepState, desc: "dispatched/completed/failed" }
+      - { key: reason_code,   type: string, desc: "dispatched/completed 为 OS2-0000；failed 为稳定失败码" }
+      - { key: ts,            type: number, desc: "事件发布节点的 Unix epoch ms；跨节点排序以 trace_id+seq+state 为准" }
+  StepDispatch:                         # 双总线隔离：管理面步派发（core→落位节点执行代理）
+    req:
+      - { key: service,   type: string, desc: "派发子服务名（执行代理本地转调 os2.biz.svc.<service>）" }
+      - { key: node,      type: string, desc: "落位节点实例 ID；执行代理校验必须等于自身 node_id，防止错发误执行" }
+      - { key: budget_ms, type: number, desc: "步预算毫秒（截止期分摊，供执行侧观测/抢占）", opt: true }
+      - { key: trace_id,  type: string, desc: "跨域调用链追踪ID", opt: true }
+    rep:
+      - { key: result,      type: string, desc: "success/failed（透传业务服务回执）" }
+      - { key: reason_code, type: string, desc: "失败时稳定 OS2 错误码；成功为空", opt: true }
+      - { key: served_by,   type: string, desc: "执行代理自证的实际执行节点实例（F-04 落位校验）", opt: true }
+      - { key: trace_id,    type: string, desc: "追踪ID 回传", opt: true }
+  ExecutionFeedback:                    # RFC-0012 / Q-032：独立整链终态事实
+    frozen_ref: "RFC-0012 §2"
+    pub:
+      - { key: chain_id,       type: string, desc: "SC-XML 链 ID；解析前失败时为空字符串" }
+      - { key: trace_id,       type: string, desc: "本次提交的追踪 ID" }
+      - { key: success,        type: enum, enum: boolean, desc: "整链终态结果 true/false" }
+      - { key: reason_code,    type: string, desc: "成功为 OS2-0000；失败为造成终态的稳定 OS2 错误码" }
+      - { key: cost_ms,        type: number, desc: "调度器节点以单调时钟计算的本次同步执行耗时 ms" }
+      - { key: completed_nodes, type: string, desc: "已完成 chain node ID，按执行顺序逗号分隔；无完成步时为空字符串" }
+  ServiceCatalogQuery:                  # 冻结清单 §3.4（v1.1.0/RFC-0001 分页过滤）
+    frozen_ref: "freeze-review §3.4 + RFC-0009 §3.3"
+    req:
+      - { key: prefix, type: string, desc: "服务名前缀过滤", opt: true }
+      - { key: domain, type: enum, enum: domain, desc: "域过滤（既有键）", opt: true }
+      - { key: offset, type: number, desc: "分页起点", opt: true }
+      - { key: limit,  type: number, desc: "分页大小（不带=全量）", opt: true }
+    rep:
+      - { key: service_ids, type: string, desc: "本页逻辑服务标识，逗号分隔" }
+      - { key: total,       type: number, desc: "命中总数" }
+      - { key: next_offset, type: number, desc: "下页起点（有下页才给出）", opt: true }
+      - { key: "health.<service>",    type: enum, enum: health, desc: "最佳实例健康", pattern: true }
+      - { key: "endpoint.<service>",  type: string, desc: "最佳实例端点", pattern: true }
+      - { key: "instances.<service>", type: number, desc: "该逻辑服务实例数", pattern: true }
+      - { key: "nodes.<service>",     type: string, pattern: true,
+          desc: "【RFC-0018】该逻辑服务当前注册在哪些节点（逗号分隔、字典序）。调度落位据此约束候选——没有它，落位只能按负载择优，与服务实际在哪台机无关" }
+      - { key: "lease_ms.<record>",   type: number, desc: "逐记录生效租期；record=service_id@node_id；同时提供最佳实例的 service_id 别名", pattern: true }
+  ServiceInstanceStateQuery:            # RFC-0009 + RFC-0011：查询时即时求值的实例事实源
+    frozen_ref: "RFC-0009 §3.4 + RFC-0011 §2"
+    req:
+      - { key: prefix, type: string, desc: "服务名前缀过滤", opt: true }
+      - { key: domain, type: enum, enum: domain, desc: "域过滤", opt: true }
+    rep:
+      - { key: instance_keys, type: string, desc: "service_id@node_id 实例键，逗号分隔" }
+      - { key: total,         type: number, desc: "实例总数" }
+      - { key: evaluated_at_ms, type: number, desc: "注册中心构造本应答前的服务端租约求值时刻" }
+      - { key: "service_id.<record>", type: string, desc: "逻辑服务标识", pattern: true }
+      - { key: "instance_id.<record>", type: string, desc: "运行实例标识", pattern: true }
+      - { key: "node_id.<record>", type: string, desc: "部署节点标识", pattern: true }
+      - { key: "health_state.<record>", type: enum, enum: health, desc: "实例健康状态", pattern: true }
+      - { key: "reason_code.<record>", type: string, desc: "OS 对当前状态的稳定分类；租约过期为 OS2-1002，未分类为 OS2-0000", pattern: true }
+      - { key: "lease_ms.<record>", type: number, desc: "实例生效租期", pattern: true }
+      - { key: "last_seen_ms.<record>", type: number, desc: "注册中心最后接收时刻", pattern: true }
+      - { key: "reported_timestamp_ms.<record>", type: number, desc: "参与方来源时间戳，仅作证据", pattern: true }
+  ImpactQuery:                          # RFC-0013 / M8：只读确定性影响分析
+    frozen_ref: "RFC-0013 §2"
+    req:
+      - { key: failed_nodes, type: string, desc: "故障节点 model_id 或 profile node_id，逗号分隔", opt: true }
+      - { key: failed_links, type: string, desc: "导入 topology link id，逗号分隔", opt: true }
+      - { key: failed_services, type: string, desc: "故障服务 model_id 或 runtime_id，逗号分隔", opt: true }
+      - { key: runtime_down_services, type: string, desc: "由 M7 实例状态查询得到的 down runtime_id，逗号分隔", opt: true }
+      - { key: runtime_evaluated_at_ms, type: number, desc: "M7 实例事实服务端求值时刻", opt: true }
+    rep:
+      - { key: accepted, type: enum, enum: boolean, desc: "输入是否被模型快照完整识别" }
+      - { key: reason_code, type: string, desc: "成功 OS2-0000；未知或非法输入 OS2-5001" }
+      - { key: input_digest, type: string, desc: "规范化输入 SHA-256" }
+      - { key: snapshot_sha256, type: string, desc: "本次计算使用的 topology snapshot SHA-256" }
+      - { key: runtime_evaluated_at_ms, type: number, desc: "原样返回的 M7 事实求值时刻" }
+      - { key: affected_nodes, type: string, desc: "排序后的受影响 node model_id，逗号分隔" }
+      - { key: affected_services, type: string, desc: "排序后的受影响 service model_id，逗号分隔" }
+      - { key: affected_chains, type: string, desc: "排序后的受影响 chain model_id，逗号分隔" }
+      - { key: paths, type: string, desc: "排序后的传播路径，以竖线分隔" }
+      - { key: unknown_inputs, type: string, desc: "无法识别的显式输入，逗号分隔" }
+  ResourceInventoryQuery:               # 冻结清单 §3.2 徽标键（应答附加，动态键模板）
+    frozen_ref: "freeze-review §3.2/§3.5"
+    req:
+      - { key: query,  type: string, desc: "candidates=调度候选查询（缺省全量清单）", opt: true }
+      - { key: domain, type: enum, enum: domain, desc: "域过滤", opt: true }
+    rep:
+      - { key: node_ids,         type: string, desc: "节点清单（逗号分隔）" }
+      - { key: "os.<node>",      type: string, desc: "徽标：OS 展示名", pattern: true }
+      - { key: "cid.<node>",     type: string, desc: "徽标：容器短 ID", pattern: true }
+      - { key: "boot.<node>",    type: string, desc: "徽标：启动阶段", pattern: true }
+      - { key: "modules.<node>", type: string, desc: "徽标：装载模块", pattern: true }
+      - { key: "payload.<node>", type: string, desc: "徽标：载荷名", pattern: true }
+      - { key: "score.<node>",   type: number, desc: "候选评分（0..1，预留折扣后）", pattern: true }
+  ResourceReserve:                      # 冻结清单 §3.5（v1.2.0/RFC-0002 预留联动）
+    frozen_ref: "freeze-review §3.5"
+    req:
+      - { key: node_id, type: string, desc: "预留节点" }
+      - { key: frac,    type: number, desc: "预留份额 0..1" }
+      - { key: holder,  type: string, desc: "持有者（链 ID）" }
+      - { key: ttl_ms,  type: number, desc: "预留时限（到期兜底释放）" }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: reason,   type: string, desc: "拒绝原因（拒绝时）", opt: true }
+  ResourceRelease:                      # 冻结清单 §3.5
+    frozen_ref: "freeze-review §3.5"
+    req:
+      - { key: node_id, type: string, desc: "释放节点" }
+      - { key: frac,    type: number, desc: "释放份额" }
+      - { key: holder,  type: string, desc: "持有者（链 ID）" }
+    rep:
+      - { key: released, type: string, desc: "true/false" }
+  ModelSubmit:                          # 冻结清单 §3.7（v1.4.0/RFC-0004：F-13 收编，键集=既有实现如实登记）
+    frozen_ref: "freeze-review §3.7"
+    req:
+      - { key: model_id, type: string, desc: "模型统一编码（qt. 前缀）" }
+      - { key: kind,     type: string, desc: "模型类别（device/chain/…）" }
+      - { key: version,  type: string, desc: "模型版本" }
+      - { key: payload,  type: string, desc: "模型包体（JSON）" }
+    rep:
+      - { key: model_id, type: string, desc: "回显模型编码" }
+      - { key: passed,   type: string, desc: "true/false（校验+兼容门综合）" }
+      - { key: issues,   type: string, desc: "校验问题清单（field: problem; 串接）" }
+      - { key: compat,   type: string, desc: "兼容门裁决证据（版本更新时）", opt: true }
+  ModelQuery:                           # 冻结清单 §3.7
+    frozen_ref: "freeze-review §3.7"
+    req:
+      - { key: model_id, type: string, desc: "模型统一编码" }
+    rep:
+      - { key: found,    type: string, desc: "true/false" }
+      - { key: model_id, type: string, desc: "模型编码（found 时）", opt: true }
+      - { key: kind,     type: string, desc: "模型类别（found 时）", opt: true }
+      - { key: version,  type: string, desc: "模型版本（found 时）", opt: true }
+      - { key: payload,  type: string, desc: "模型包体（found 时）", opt: true }
+  ProgramControlCommand:                # 冻结清单 §3.8（v1.5.0/RFC-0005：类型化载荷首启用主题）
+    frozen_ref: "freeze-review §3.8"
+    # 通用 Command 要素（idl/os2_common.idl）逐键登记以启用运行时边界类型化校验；
+    # 键集/线上形态=既有实现原样（行为零变化），仅补 type/opt 供 MsgValidator 用。
+    # 安全敏感设备命令：deadline_ms 启用后走严格数值解析（拒 get_u64 静默 0 的病灶）。
+    req:
+      - { key: command_id,   type: string, desc: "命令唯一 ID（回执关联）" }
+      - { key: target_id,    type: string, desc: "目标设备对象" }
+      - { key: command_type, type: string, desc: "操作类型（start/stop/reset/read）" }
+      - { key: args_json,    type: string, desc: "参数（JSON 不透明子文档）", opt: true }
+      - { key: operator,     type: string, desc: "操作者（权限主体）", opt: true }
+      - { key: auth_context, type: string, desc: "权限上下文", opt: true }
+      - { key: deadline_ms,  type: number, desc: "截止时限 ms（存在即须为数值）", opt: true }
+      - { key: trace_id,     type: string, desc: "跨域调用链追踪 ID", opt: true }

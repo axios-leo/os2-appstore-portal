@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "os2.model.manifest.schema.json",
+  "title": "部署清单模型 Manifest（OS2-MDL v0.1）",
+  "description": "运行映射：更新策略（清单级缺省 + 逐制品覆盖）+ 制品链路（岸侧工厂经离线介质／受控通道移交 → 端侧应用商店入库 → 总控分发 → 本域拉取）",
+  "type": "object",
+  "required": ["model_id", "name", "kind", "version", "artifacts", "target"],
+  "properties": {
+    "model_id": { "type": "string", "pattern": "^qt\\d+(\\.[a-z][a-z-]*\\d+)*$", "description": "**实体 id**（M5 制式）：每段 <类型名><编号>，编号＝树上位置。去掉数字即得类型 id，须在 contracts/models/types.json 注册——类型集合本身就是挂载约束，不另写约束表。" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]*$", "description": "工程师短名（对齐 OPC UA 的 BrowseName）：日志/排障渲染成 `qt0.compute1.service4:ctrl-motion`。**同父作用域内唯一**。id 是机器主键、name 给人读、label 给客户看——三分法同 OPC UA NodeId/BrowseName/DisplayName。" },
+    "kind": { "const": "manifest" },
+    "label": { "type": "string", "description": "中文显示名（demo 真件投影展示用；名字即模型属性，见 demo_projection_plan 子决策1）" },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+(\\.\\d+)?$" },
+    "target": { "type": "string", "description": "目标节点，如 compute-01" },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "x-ref-kind": "artifact",
+      "items": {
+        "oneOf": [
+          { "type": "string", "description": "artifact 模型 model_id 引用（x-ref-kind 跨模型引用完整性检）" },
+          {
+            "type": "object",
+            "required": ["ref"],
+            "additionalProperties": false,
+            "properties": {
+              "ref": { "type": "string", "description": "artifact 模型 model_id 引用" },
+              "mode": { "type": "string", "enum": ["PRELOADED", "ALWAYS_DOWNLOAD", "DOWNLOAD_AND_CACHE", "UPDATE_AND_CACHE"], "description": "**本制品的更新策略**，缺省继承清单级 mode。逐服务设定就写在这里（RFC-0020 §2.7）。" }
+            },
+            "description": "带更新策略的制品项。只写引用时用字符串形式即可——**存量真件行为逐字节不变**。"
+          }
+        ]
+      }
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["PRELOADED", "ALWAYS_DOWNLOAD", "DOWNLOAD_AND_CACHE", "UPDATE_AND_CACHE"],
+      "default": "DOWNLOAD_AND_CACHE",
+      "description": "**清单级缺省更新策略**；逐制品可在 artifacts[].mode 覆盖（RFC-0020 §2.7）。PRELOADED＝制品随节点基线自带、运行期不取件；UPDATE_AND_CACHE＝有新版才取件并激活；ALWAYS_DOWNLOAD＝每次激活前重新取件；DOWNLOAD_AND_CACHE＝首次取件后缓存（存量缺省，**与 PRELOADED 不是一回事**：它第一次仍要取件）。**策略值由 CSCI-09 岸侧工厂在定版时写入、由 CSCI-08 端侧商店执行。**"
+    },
+    "pullFrom": { "type": "string", "description": "分发点，两跳口径默认 core-01" }
+  },
+  "additionalProperties": true
+}

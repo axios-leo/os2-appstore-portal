@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "os2.model.artifact.schema.json",
+  "title": "制品模型 Artifact（OS2-MDL v0.1）",
+  "description": "运行映射：store 真摘要准入+封签（S5 假摘要拒绝判据）；M2 os2-pack 增 SBOM/签名",
+  "type": "object",
+  "required": [
+    "model_id",
+    "name",
+    "kind",
+    "version",
+    "format",
+    "digest"
+  ],
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "pattern": "^qt\\d+(\\.[a-z][a-z-]*\\d+)*$",
+      "description": "**实体 id**（M5 制式）：每段 <类型名><编号>，编号＝树上位置。去掉数字即得类型 id，须在 contracts/models/types.json 注册——类型集合本身就是挂载约束，不另写约束表。"
+    },
+    "name": {
+      "type": "string"
+    },
+    "kind": {
+      "const": "artifact"
+    },
+    "label": {
+      "type": "string",
+      "description": "中文显示名（demo 真件投影展示用；名字即模型属性，见 demo_projection_plan 子决策1）"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "format": {
+      "type": "string",
+      "examples": [
+        "oci",
+        "tar.gz",
+        "deb",
+        "elf"
+      ]
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "真摘要（伪造校验和不允许——不伪造铁律）"
+    },
+    "from": {
+      "type": "string",
+      "description": "产出方（开发态节点/厂商）"
+    },
+    "sbom": {
+      "type": "string",
+      "description": "SBOM 引用（M2 os2-pack）"
+    },
+    "exec": {
+      "type": "string",
+      "description": "【RFC-0017 §2.3】包内可执行文件相对路径（如 bin/ctrl_motion）。EM 据此拉起进程——**没有它 EM 就不知道该起什么**。缺省不填＝该制品不是可执行件（库/模型/配置包），EM 跳过。"
+    }
+  },
+  "additionalProperties": true
+}

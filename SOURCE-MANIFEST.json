@@ -1,0 +1,246 @@
+{
+  "repository": "https://github.com/719dev/OS",
+  "ref": "main",
+  "commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb",
+  "archive_sha256": "638d579547903a826ca335d2324553c9a5b4f58edbb2e6496cb08d0e231a7938",
+  "download_date": "2026-09-16",
+  "source_files": {
+    "VERSION": {
+      "source_path": "VERSION",
+      "sha256": "d2e181481b9515797bc42f282b122d2529d24ea985125bd5c95ded5004e0c7c9",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    ".gitattributes": {
+      "source_path": ".gitattributes",
+      "sha256": "a947ea7d263f72ea7db0526637922c9861edb04c282a3f2f40f9ee620158b7b5",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "docs/CODING_STANDARD.md": {
+      "source_path": "docs/CODING_STANDARD.md",
+      "sha256": "4f1c3a7721de5bfd53df16c3e7844055501b0ba85e768d38a85023bbbde72838",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/VERSION": {
+      "source_path": "contracts/VERSION",
+      "sha256": "8fc21140add9202a29f2eec0793eaa9dcf4065a756d9d91775190096d44a62aa",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/idl/os2_common.idl": {
+      "source_path": "contracts/idl/os2_common.idl",
+      "sha256": "8e07edcf89b669e24e28611679231088318e9bcab501cd109027c860845648e9",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/topics/topics.yaml": {
+      "source_path": "contracts/topics/topics.yaml",
+      "sha256": "bc3246fd09582b85e8430584754babafa802b9ef4812aaffc573a10d6df39c66",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/data-dictionary/data_dictionary.yaml": {
+      "source_path": "contracts/data-dictionary/data_dictionary.yaml",
+      "sha256": "82e69c656450a47a33e03b9d3718c91cd3cd07a06a17829044c09e85e695d912",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/error-codes/error_codes.yaml": {
+      "source_path": "contracts/error-codes/error_codes.yaml",
+      "sha256": "863cf04d4f772dd500322277df29f684d6d4e411fe4bbd64a0db033735b5cefb",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/gen_contracts.py": {
+      "source_path": "tools/gen_contracts.py",
+      "sha256": "6e0192f9b0b3e5dc7c027575e0ec19f0c2012140fb74b257e40095fa1504cf80",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/addressing.hpp": {
+      "source_path": "platform/include/os2/platform/addressing.hpp",
+      "sha256": "ffcbac7f6a3dba295e5086f8639f0814b8ed4e91edbc13e5256314d932dbe9b1",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/atomic_file.hpp": {
+      "source_path": "platform/include/os2/platform/atomic_file.hpp",
+      "sha256": "e9417cceb9845bcb24617e50b4cd403847f0073d3615ef168ec6562a8e3c28e4",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/bus.hpp": {
+      "source_path": "platform/include/os2/platform/bus.hpp",
+      "sha256": "2ad5882f69d4066a24dbe41538c052234d85fcf4627afbc56387bf43635a3ecd",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/chain.hpp": {
+      "source_path": "platform/include/os2/platform/chain.hpp",
+      "sha256": "68c4a1f3dfc18b36aeac343d3c8842a858db197fa635d977ff23f313bc7a88be",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/config.hpp": {
+      "source_path": "platform/include/os2/platform/config.hpp",
+      "sha256": "03d3c22b52fbc82c505dc37f74cc18b6176c56ea99d1b404a45f2f4ade9571c0",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/contracts.hpp": {
+      "source_path": "platform/include/os2/platform/contracts.hpp",
+      "sha256": "4e52cc7abade5a7528184b31f1b8e8a502615ab658eb471ed5c554332ba02788",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/hash.hpp": {
+      "source_path": "platform/include/os2/platform/hash.hpp",
+      "sha256": "67f232c26b5c339dddca5349eca2d8173f6874e0f5fdfdae0adfa180f720865f",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/log.hpp": {
+      "source_path": "platform/include/os2/platform/log.hpp",
+      "sha256": "54087af2f746a72aa55a74b95dc00d35bf0f45fd9fda7d8a663bff0371e846bf",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/msg_validator.hpp": {
+      "source_path": "platform/include/os2/platform/msg_validator.hpp",
+      "sha256": "a137beda2208bf83e00d47cac410151208547c0ffea7f46d938cd63c8035a49a",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/platform.hpp": {
+      "source_path": "platform/include/os2/platform/platform.hpp",
+      "sha256": "58367818f47246e33c7197f5d0f0b70c4bc38f1b3984354d6cf2a968717d7d54",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/service.hpp": {
+      "source_path": "platform/include/os2/platform/service.hpp",
+      "sha256": "505eea9c092de418d564b8d80be89d8bc57722b85bcbc1f0f1f31dd33114c32f",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/testing.hpp": {
+      "source_path": "platform/include/os2/platform/testing.hpp",
+      "sha256": "597000e38fe8b3e6bc9dfe624737fcbf7faf4f427a857056859c15b081d97cd1",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/include/os2/platform/x509.hpp": {
+      "source_path": "platform/include/os2/platform/x509.hpp",
+      "sha256": "42014832f3dde86cd376670856659ef7570743ab1d64157a78ff8af5fc1b4317",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "platform/tests/test_platform.cpp": {
+      "source_path": "platform/tests/test_platform.cpp",
+      "sha256": "44efa0be95faf3d4c1a1ca5db8971621478624d40db04a216f41afe6e7375de7",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/CMakeLists.txt": {
+      "source_path": "modules/appstore-portal/CMakeLists.txt",
+      "sha256": "431dba35f57a25f6aa7c0db8e37cc00d380ca51bdde860775e9fc450d0c94067",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/include/os2/appstore_portal/api.hpp": {
+      "source_path": "modules/appstore-portal/include/os2/appstore_portal/api.hpp",
+      "sha256": "46a4a26099b98cd78d6da1112f9a9f34e8608192ba78695b2cb62736359dd2cb",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/README.md": {
+      "source_path": "modules/appstore-portal/README.md",
+      "sha256": "cd68fd6f60572fb50c1390cd8d665096386be76be8427620bbd4cea00fab9bdb",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/src/impl/grayscale_store.hpp": {
+      "source_path": "modules/appstore-portal/src/impl/grayscale_store.hpp",
+      "sha256": "0d481348ddd614f9f1e15da5a381f8ae874182f22f8cecf49156c3c708b03f73",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/src/impl/signature_verifier.hpp": {
+      "source_path": "modules/appstore-portal/src/impl/signature_verifier.hpp",
+      "sha256": "3f55811072614ce5da5002fb9772b8aecf520e7bf5949a5f7f5c0e90fad8d532",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/src/store_service.hpp": {
+      "source_path": "modules/appstore-portal/src/store_service.hpp",
+      "sha256": "0696dde225f19540e7dfc2381a95ea5260fc24bb875021e919fe24aea6f54497",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/tests/test_appstore_portal.cpp": {
+      "source_path": "modules/appstore-portal/tests/test_appstore_portal.cpp",
+      "sha256": "6fe383c6c48c88474e676be4c1c904de7f9d2cb253865cea179d1ff5fae0569b",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "modules/appstore-portal/tests/test_store_impl.cpp": {
+      "source_path": "modules/appstore-portal/tests/test_store_impl.cpp",
+      "sha256": "e7318603de8c2caf8ed27f13e27f268c190f9838fa2a144a76589cb8f490d033",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "docs/rfcs/RFC-0006-model-binary-split.md": {
+      "source_path": "docs/rfcs/RFC-0006-model-binary-split.md",
+      "sha256": "d73fcac28179bdd9eeb68419b1f182e39dbe475bda3f4569db1475c73b421520",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "docs/rfcs/RFC-0017-execution-manager-and-process-lifecycle.md": {
+      "source_path": "docs/rfcs/RFC-0017-execution-manager-and-process-lifecycle.md",
+      "sha256": "a668ae5188d4f480db0153eb1122738f08f5ca08d40b70968138c7e1f8132bc2",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "docs/rfcs/RFC-0020-container-workload-backend.md": {
+      "source_path": "docs/rfcs/RFC-0020-container-workload-backend.md",
+      "sha256": "9ecdd5c09c010c69ac229043ade88ce4b32f8e39871c8d17a94f28e98121f888",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "docs/security/CERT_MANAGEMENT.md": {
+      "source_path": "docs/security/CERT_MANAGEMENT.md",
+      "sha256": "84ef42de84703b0e5f0d00fe8e37ae5a2965a16a0ec5938b42af9add2704c347",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/os2_pack.py": {
+      "source_path": "tools/os2_pack.py",
+      "sha256": "1fdd0c6071222022530ab894928222b3a1532ddce5e331cf2a6a354bf31e1e9d",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/gen_certs.sh": {
+      "source_path": "tools/gen_certs.sh",
+      "sha256": "e780128317af9d681feead90c0f08b61920cc7e5b14ff8cf6c7c09e92b611abc",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/sign_artifact.sh": {
+      "source_path": "tools/sign_artifact.sh",
+      "sha256": "5c0fb48d47e43f66246ed5d27b2658dcd35485dc51d12d4a780c4c510484de14",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/verify_artifact.sh": {
+      "source_path": "tools/verify_artifact.sh",
+      "sha256": "765878ca098187d6022a1f420a5a71adb2ba14ddc254303afbe481d8fdff42f7",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/sign_release.sh": {
+      "source_path": "tools/sign_release.sh",
+      "sha256": "a5a6ee66ab7abccef8926cd43920b050c201f9e4b78bef60b422f9afb98c6db4",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "tools/verify_release.sh": {
+      "source_path": "tools/verify_release.sh",
+      "sha256": "11f452eb194c5a7947a9f0107da4789aee4c0716a7a06f9f5edf6911b34314dd",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/models/types.json": {
+      "source_path": "contracts/models/types.json",
+      "sha256": "80b22123e4eeafab6c508c8a7ce2ba087e98801571fa27b6dd9d02a7edcafe03",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/models/artifact.schema.json": {
+      "source_path": "contracts/models/artifact.schema.json",
+      "sha256": "ab951895a412fe152269e4245d73d1974e92c2bde7cee442b3c18e02d82f7004",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/models/manifest.schema.json": {
+      "source_path": "contracts/models/manifest.schema.json",
+      "sha256": "2d0b75562796ad666eb82bec88cb10804376e204f774869dc53e8f20e1a3b0ba",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/models/node.schema.json": {
+      "source_path": "contracts/models/node.schema.json",
+      "sha256": "a1243b678ee8a7dfd6e47673cede7dbc7bb4a9707f581f3e2703d005512affc2",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    },
+    "contracts/models/host.schema.json": {
+      "source_path": "contracts/models/host.schema.json",
+      "sha256": "cf662870ba4c989fe38dd88b3728e906348fa4ff5d42dcf313e12e658e22ffb9",
+      "source_commit": "4a650bc5b8f0f8013ce51f866e5b228eaacb9bbb"
+    }
+  },
+  "module_number": 3,
+  "module": "appstore-portal",
+  "title": "应用商店与软件仓",
+  "upstream_module_exists": true,
+  "module_source_unchanged": true,
+  "generated_documents": "本包根目录中文说明、根 CMake、校验脚本及占位说明由本次整理生成；不是上游既有实现。",
+  "excerpts": "现状/公共约定摘录在文中标注原路径、行号与提交。"
+}

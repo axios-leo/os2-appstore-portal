@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "os2.model.host.schema.json",
+  "title": "物理机模型 Host（OS2-MDL v0.1）",
+  "description": "**一台真实的机器**。节点（node）是 OS² 的调度单位，可以是整机、也可以是机上的一个容器；本模型回答的是另一个问题——**哪些节点其实跑在同一台机器上**。\n\n为什么必须建：0813 演示里 compute-01/02/03 是曙光服务器上的三个容器，看板不圈出来就成了「三台曙光」，那是假话；而总控另占一台曙光（负责人 2026-08-15），不建模就只能靠在前端写死两个矩形——加一台机器要改一次代码，且改错了没有任何判据会红。\n\n它**不进承载树**（同 network 口径）：树表达的是「谁装在谁里」的隶属，而「跑在哪台机上」是横切事实——节点会因故障迁移到别的机器上，做成 id 的一段就得跟着改 id。故 host 挂根，由 node.host 单向引用。",
+  "type": "object",
+  "required": [
+    "model_id",
+    "name",
+    "kind",
+    "version",
+    "label"
+  ],
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "pattern": "^qt\\d+(\\.[a-z][a-z-]*\\d+)*$",
+      "description": "**实体 id**（M5 制式）：去掉数字即得类型 qt.host，须在 contracts/models/types.json 注册。"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "description": "工程师短名（如 sugon-core）。id 是机器主键、name 给人读、label 给客户看。"
+    },
+    "kind": {
+      "const": "host"
+    },
+    "label": {
+      "type": "string",
+      "description": "中文显示名（看板上物理机框的标题）"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "vendor": {
+      "type": "string",
+      "description": "厂商/型号原文。**不做 enum**——同 accelerators.model 口径（0720 边界④：OS 不解释业务字段），我方只透传与索引。"
+    },
+    "arch": {
+      "type": "string",
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ],
+      "description": "整机指令集架构。不填＝未声明；**不推定**——推定就是编造。机上各节点的 arch 应与它一致（不一致由交叉检点名）。"
+    },
+    "capacity": {
+      "type": "object",
+      "description": "**整机物理规格**，与 node.capacity 是两回事：node.capacity 是调度分母（按容器切出来的那份），本表是这台机器实际有多少。填了就会被交叉检用上——同机各节点 capacity.cpu 之和不得超过本值（超了就是把一台机器超卖了，账面上就不成立）。不填＝未声明，该条检跳过。",
+      "properties": {
+        "cpu": {
+          "type": "number",
+          "minimum": 0,
+          "description": "整机 CPU 核数"
+        },
+        "mem_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu_mem_mib": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "os": {
+      "type": "string",
+      "examples": [
+        "Linux"
+      ],
+      "description": "宿主机操作系统展示名（容器化部署时＝跑 Docker 的那层）"
+    },
+    "desc": {
+      "type": "string"
+    },
+    "relations": {
+      "type": "array",
+      "description": "【RFC-0021】**非拓扑**关系，挂在事实的**源对象**上。首批四类 kind：`located-in`（物理位置）/`backs-up`（备份，方向固定为备份方→被保护方，同一对只登记一条）/`feeds`（非链场景的上下游）/`depends`（一般依赖）。**不设 enum**——未知 kind 一律透传·索引·追溯，不报错（0720 边界④）。拓扑型关系（供电/控制/网络连接与可达）不进本表，升格为 network 实体（RFC-0022）。",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "target"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "关系语义。首批四类见上；未知值透传。"
+          },
+          "target": {
+            "type": "string",
+            "description": "关系目标的 model_id（任一受控实体）。存在性与方向/环规则由 os2_validate 交叉检把守。"
+          },
+          "note": {
+            "type": "string"
+          },
+          "constraint": {
+            "type": "string",
+            "description": "该关系附带的约束原文。OS **执行约束、不裁决约束内容**。"
+          },
+          "sched_relevant": {
+            "type": "boolean",
+            "description": "true 才进调度器与影响引擎；缺省 false＝静态描述、仅供管理与追溯。"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "该关系事实的取证引用（接线表/现场照片/客户拓扑图的受控编号）。OS 不解释，透传·索引·追溯。"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,219 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "os2.model.node.schema.json",
+  "title": "节点模型 Node（OS2-MDL v0.1）",
+  "description": "运行映射：节点 profile 启动（/export 真件）、ResourceReport 上报",
+  "type": "object",
+  "required": [
+    "model_id",
+    "name",
+    "kind",
+    "version",
+    "domain",
+    "profile"
+  ],
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "pattern": "^qt\\d+(\\.[a-z][a-z-]*\\d+)*$",
+      "description": "**实体 id**（M5 制式）：每段 <类型名><编号>，编号＝树上位置。去掉数字即得类型 id，须在 contracts/models/types.json 注册——类型集合本身就是挂载约束，不另写约束表。"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "description": "工程师短名（对齐 OPC UA 的 BrowseName）：日志/排障渲染成 `qt0.compute1.service4:ctrl-motion`。**同父作用域内唯一**。id 是机器主键、name 给人读、label 给客户看——三分法同 OPC UA NodeId/BrowseName/DisplayName。"
+    },
+    "kind": {
+      "const": "node"
+    },
+    "label": {
+      "type": "string",
+      "description": "中文显示名（demo 真件投影展示用；名字即模型属性，见 demo_projection_plan 子决策1）"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+(\\.\\d+)?$"
+    },
+    "domain": {
+      "type": "string",
+      "description": "《主数据字典》domain 四值；展演资源树另有 core/shore 自标（resource.self_domain）",
+      "examples": [
+        "cai",
+        "compute",
+        "hmi",
+        "ops",
+        "core",
+        "shore"
+      ]
+    },
+    "profile": {
+      "type": "string",
+      "description": "节点启动配置文件，如 compute-01.conf。真实节点无论 managed=direct/proxy 都装 OS²、都必须提供 profile（交叉检强制，且文件须真实存在）。"
+    },
+    "managed": {
+      "type": "string",
+      "enum": [
+        "direct",
+        "proxy"
+      ],
+      "description": "【M6 重定义】OS 对节点内部的管理深度（真实节点都装 OS²）：direct=OS 深管到节点内部（计算节点的 pod 由 OS 调度）；proxy=OS 只管到节点级、内部/下级由被代理方自管——采控节点代理现场设备（设备自管）、AI/智算节点代理内部资源（pod/GPU 由 AI 框架自管）。两者都有 profile，缺省 direct；managed 不表达安装状态。"
+    },
+    "reserved": {
+      "type": "string",
+      "enum": [
+        "shared",
+        "exclusive"
+      ],
+      "description": "【M4 边界①】占用方式：shared=纳入统一择优可分配池；exclusive=固定预留池（如 AI 池），容量不计入总量、不参与择优。缺省 shared"
+    },
+    "capacity": {
+      "type": "object",
+      "description": "【0720 决议：资源并入节点属性，对外调度只认节点】**本节点自身作为调度候选**的可分配容量——加权评分与预留账本的分母。运行侧真相源＝profile 的 os.cpu_total（os2-extract 逐键比对）。注意：与下方 instances **是并列候选、不是嵌套预算**——节点与其实例各自独立上报、各自入候选，故 instances 容量之和不受本值约束（SIL 建模口径；1.5期台架按实测重定）。",
+      "properties": {
+        "cpu": {
+          "type": "number",
+          "minimum": 0,
+          "description": "CPU 核数/槽位"
+        },
+        "mem_mib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu_mem_mib": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "【RFC-0015】本节点 GPU 显存总量（MiB）。决定模型装不装得下——`gpu` 那个计数回答不了这个问题。"
+        }
+      }
+    },
+    "arch": {
+      "type": "string",
+      "enum": [
+        "x86_64",
+        "aarch64",
+        "armv7l"
+      ],
+      "description": "【RFC-0015】指令集架构。**制品能不能装在这台机上，看它**（x86 曙光与 Jetson Orin 装的不是同一个包）。不填＝未声明；**不推定为 x86_64**——推定就是编造。 【2026-08-18】新增 armv7l：采集网关实机（tcu1200-u01-lv-v1）是 32 位 ARM，**本机运行件必须在板上编或交叉编**——发 x86-64 的那份装上去起不来。"
+    },
+    "accelerators": {
+      "type": "array",
+      "description": "【RFC-0015】加速器清单，看板画像用。与 capacity.gpu 并存而非取代：`capacity.gpu` 是**调度用的计数**（预留账本的分母），本表是**看板用的画像**；两者若打架以 capacity.gpu 为调度真相源。",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "gpu",
+              "npu",
+              "fpga",
+              "dsp"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "description": "厂商型号原文（如 RTX 5090 / Jetson Orin）。**不做 enum**——型号是业务/供应链事实、年年新增，做成 enum 等于每来一块新卡都要 bump 契约走 RFC，正是 0720 边界④「OS 不解释业务字段」要避免的。我方只透传与索引。"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mem_mib": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "os": {
+      "type": "string",
+      "examples": [
+        "Linux",
+        "QNX",
+        "RTOS",
+        "external"
+      ],
+      "description": "节点操作系统展示名；managed 只描述 OS² 管理深度，不决定是否安装 OS²。取值须与 profile 的 os.name 一致（os2-extract 逐键比对）。"
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "host": {
+      "type": "string",
+      "x-ref-kind": "host",
+      "description": "本节点**实际跑在哪台物理机上**（HostRef，如 qt0.host2）。节点是调度单位——可以是整机、也可以是机上的一个容器；本字段是唯一能分辨这两者的地方。不填＝未声明该节点的落机（整机独占且无同机伙伴时可不填）。\n它是**横切引用不是隶属**：节点会因故障迁移到别的机器，做成 id 的一段就得跟着改 id（同 networks 的道理）。同 host 的节点 capacity.cpu 之和不得超过 host.capacity.cpu，由 os2_validate 交叉检把守。"
+    },
+    "networks": {
+      "type": "array",
+      "x-ref-kind": "network",
+      "items": {
+        "type": "string",
+        "description": "NetworkRef，如 eth01/eth02/can01（qt.* 值按 x-ref-kind 做跨模型引用完整性检）"
+      }
+    },
+    "payload": {
+      "type": "string",
+      "description": "域内载荷（testbed.payload）"
+    },
+    "relations": {
+      "type": "array",
+      "description": "【RFC-0021】**非拓扑**关系，挂在事实的**源对象**上。首批四类 kind：`located-in`（物理位置）/`backs-up`（备份，方向固定为备份方→被保护方，同一对只登记一条）/`feeds`（非链场景的上下游）/`depends`（一般依赖）。**不设 enum**——未知 kind 一律透传·索引·追溯，不报错（0720 边界④）。拓扑型关系（供电/控制/网络连接与可达）不进本表，升格为 network 实体（RFC-0022）。",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "target"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "关系语义。首批四类见上；未知值透传。"
+          },
+          "target": {
+            "type": "string",
+            "description": "关系目标的 model_id（任一受控实体）。存在性与方向/环规则由 os2_validate 交叉检把守。"
+          },
+          "note": {
+            "type": "string"
+          },
+          "constraint": {
+            "type": "string",
+            "description": "该关系附带的约束原文。OS **执行约束、不裁决约束内容**。"
+          },
+          "sched_relevant": {
+            "type": "boolean",
+            "description": "true 才进调度器与影响引擎；缺省 false＝静态描述、仅供管理与追溯。"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "该关系事实的取证引用（接线表/现场照片/客户拓扑图的受控编号）。OS 不解释，透传·索引·追溯。"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "【RFC-0021】该对象会发出的事件/主题清单（主题名，契约见 contracts/topics）。OS 只索引与追溯，不解释语义。",
+      "items": {
+        "type": "string"
+      }
+    },
+    "asset": {
+      "type": "object",
+      "description": "【RFC-0021】资产/管理属性（资产编号、厂商、型号、批次、维护周期等）。OS 不解释，透传·索引·追溯。",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

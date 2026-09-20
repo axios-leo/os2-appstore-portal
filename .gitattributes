@@ -1,0 +1,7 @@
+# 统一换行：仓库内一律 LF；Windows 检出由编辑器按需处理（见 docs/DEVELOPMENT_GUIDE.md）
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pack binary
+*.rar binary
+*.zip binary

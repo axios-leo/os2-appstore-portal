@@ -1,0 +1,54 @@
+# OS² 主题清单（权威源：《架构说明》§8.7 接口与主题清单——本文件为其机读形态，
+# M1 起 contracts.hpp 的 topics 命名空间由此生成；新增主题先改本文件再生成）。
+# kind: reqrep | pub | prefix；group 对应 §8.7 分组（生成注释用）。
+topics:
+  - { name: ServiceRegister,        topic: os2.mgmt.service.register,        kind: reqrep, group: 服务注册中心, label: 服务注册, desc: "节点上线时登记自己能提供哪些服务" }
+  - { name: ServiceHeartbeat,       topic: os2.mgmt.service.heartbeat,       kind: pub,    group: 服务注册中心,
+      note: "v1.9/RFC-0009：timestamp 仅作证据；服务端接收时刻重置租约；严格大于 lease_ms 才过期", label: 服务心跳, desc: "节点持续报平安，租约过期后实例保留并置 down" }
+  - { name: ServiceCatalogQuery,    topic: os2.mgmt.service.catalog.query,   kind: reqrep, group: 服务注册中心,
+      note: "v1.1/RFC-0001 分页过滤；v1.9/RFC-0009 应答附逐记录 lease_ms，发现语义仍是服务级最佳实例", label: 目录查询, desc: "调度前先查询哪些服务当前可用" }
+  - { name: ServiceInstanceStateQuery, topic: os2.mgmt.ops.service-instance.query, kind: reqrep, group: 运维管理器,
+      note: "v1.9/RFC-0009：/state.serviceInstances 的内部事实源，不参与服务发现或调度", label: 服务实例状态, desc: "按实例查询节点、健康、有效租期与接收时刻，供运维态聚合" }
+  - { name: ImpactQuery, topic: os2.mgmt.model.impact.query, kind: reqrep, group: 模型与数据管理器,
+      note: "v1.13/RFC-0013：只读确定性影响查询；显式故障 + M7 运行事实 → 排序稳定的节点/服务/链与传播路径", label: 影响查询, desc: "查询节点、链路或服务故障对服务与服务链的确定性影响" }
+  - { name: RegistryAnnounce,       topic: os2.mgmt.service.announce,        kind: pub,    group: 服务注册中心,
+      note: "纪元广播：重启收敛，M0.9/ADR-0008", label: 目录刷新, desc: "核心节点恢复后通知各域重新登记" }
+  - { name: DeviceRegister,         topic: os2.mgmt.device.register,         kind: reqrep, group: 设备监管器, label: 设备注册, desc: "把现场设备接入系统，并绑定设备模型" }
+  - { name: DeviceStateTopic,       topic: os2.mgmt.device.state,            kind: pub,    group: 设备监管器, label: 设备状态, desc: "设备在空闲、运行、故障之间变化时会发布状态" }
+  - { name: ProgramControlCommand,  topic: os2.mgmt.device.control,          kind: reqrep, group: 设备监管器,
+      note: "Command→Reply", label: 设备控制, desc: "把受控动作下发到设备，并等待执行回执" }
+  - { name: ResourceInventoryQuery, topic: os2.mgmt.resource.inventory.query, kind: reqrep, group: 资源管理器, label: 资源清单查询, desc: "查询全局资源树：域、节点、设备和负载" }
+  - { name: ResourceSnapshot,       topic: os2.mgmt.resource.snapshot,       kind: pub,    group: 资源管理器, label: 资源快照, desc: "周期发布资源水位，供页面和判据使用" }
+  - { name: ResourceReport,         topic: os2.mgmt.resource.report,         kind: pub,    group: 资源管理器,
+      note: "节点画像上报：域侧资源 Agent → 总控聚合成全局资源树，M1.3/ADR-0015", label: 资源上报, desc: "各域把自己的负载和运行信息上报到总控" }
+  - { name: ResourceReserve,        topic: os2.mgmt.resource.reserve,        kind: reqrep, group: 资源管理器,
+      note: "v1.2/RFC-0002：调度规划后预留节点份额（node_id/frac/holder/ttl_ms → accepted/reason），填充预留账本、评分即时折扣，TTL+释放双保险防泄漏", label: 资源预留, desc: "调度规划后预留节点份额，评分即时打折（RFC-0002）" }
+  - { name: ResourceRelease,        topic: os2.mgmt.resource.release,        kind: reqrep, group: 资源管理器,
+      note: "v1.2/RFC-0002：链完成/失败/让渡释放预留（node_id/frac/holder → released）", label: 资源释放, desc: "链完成或失败时释放预留的节点份额（RFC-0002）" }
+  - { name: ServiceChainSubmit,     topic: os2.mgmt.chain.submit,            kind: reqrep, group: 调度器,
+      note: "v1.12/RFC-0012：同步执行并返回终态结果；不是仅表示接收的 ACK", label: 链提交, desc: "提交 SC-XML 并同步返回整链终态结果" }
+  - { name: ExecutionFeedback,      topic: os2.mgmt.chain.feedback,          kind: pub,    group: 调度器,
+      note: "v1.12/RFC-0012：每次提交恰好一条独立整链终态事实，正式测试不以请求应答代替该观察", label: 链回执, desc: "整条链完成、失败或被安全拦截时发布独立终态事实" }
+  - { name: ChainStepEvent,         topic: os2.mgmt.chain.step,              kind: pub,    group: 调度器,
+      note: "v1.12/RFC-0012：逐步派发事实；dispatched/completed 使用 OS2-0000，failed 使用失败码，ts 为节点 Unix epoch ms", label: 链步事件, desc: "每个子服务开始、完成或失败时发布事件" }
+  - { name: StepDispatch,           topic: os2.mgmt.chain.step.dispatch,     kind: reqrep, group: 调度器,
+      note: "双总线隔离：调度器经管理面派发计算步到落位节点的执行代理，代理本地转调业务面服务（core 不经手业务数据）。节点特定主题——实际主题追加 .<node_id>（如 os2.mgmt.chain.step.dispatch.compute-01），各域执行代理仅 serve 自身节点主题以保证单应答路由", label: 步派发, desc: "调度器经管理面向落位节点派发计算步，执行代理本地转调业务服务" }
+  - { name: MetricIngest,           topic: os2.mgmt.ops.metric,              kind: pub,    group: 运维管理器, label: 运维指标, desc: "运行指标进入运维域，用于观察和告警" }
+  - { name: AlarmEvent,             topic: os2.mgmt.ops.alarm,               kind: pub,    group: 运维管理器, label: 告警事件, desc: "异常达到阈值后触发告警和自愈动作" }
+  - { name: LogSliceExport,         topic: os2.mgmt.ops.logslice.export,     kind: reqrep, group: 运维管理器, label: 证据导出, desc: "按时间窗口导出演示证据日志" }
+  - { name: ModelSubmit,            topic: os2.mgmt.model.submit,            kind: reqrep, group: 模型与数据管理器,
+      note: "v1.4/RFC-0004（F-13 收编）：模型包提交与校验（model_id/kind/version/payload → passed/issues/compat），同 id 再提交过兼容门", label: 模型提交, desc: "模型包提交入库前过校验与兼容门（RFC-0004）" }
+  - { name: ModelQuery,             topic: os2.mgmt.model.query,             kind: reqrep, group: 模型与数据管理器,
+      note: "v1.4/RFC-0004（F-13 收编）：模型包查询（model_id → found+包体）", label: 模型查询, desc: "按 model_id 查询已入库的模型包（RFC-0004）" }
+  - { name: PolicyCheck,            topic: os2.mgmt.security.policy.check,   kind: reqrep, group: 安全管理器, label: 安全校验, desc: "检查当前动作是否满足权限和会签规则" }
+  - { name: AuditEvent,             topic: os2.mgmt.security.audit,          kind: pub,    group: 安全管理器, label: 安全审计, desc: "记录安全放行、拦截和越权尝试" }
+  - { name: ArtifactPublish,        topic: os2.mgmt.store.artifact.publish,  kind: reqrep, group: 应用商店与门户, label: 制品发布, desc: "把软件制品发布到可部署仓库" }
+  - { name: ActivationCommand,      topic: os2.mgmt.store.activation,        kind: reqrep, group: 应用商店与门户, label: 灰度/回滚, desc: "按比例激活新版本，必要时回滚" }
+  - { name: ProcessReport,          topic: os2.mgmt.exec.process,            kind: pub,    group: 执行管理器,
+      note: "RFC-0017：EM 与服务进程共同上报；running 只能由 reporter=service 置位——EM 只知道 fork 成功",
+      label: 进程状态, desc: "各域执行管理程序与服务进程上报进程的计划/启动/运行/退出状态" }
+  - { name: ProcessControl,         topic: os2.mgmt.exec.control,            kind: reqrep, group: 执行管理器,
+      note: "RFC-0017：start 由 EM 执行（进程还没起，自己收不到）；stop/restart 服务进程自身也订阅",
+      label: 进程控制, desc: "下发启动、中止或重启某个服务实例进程" }
+  - { name: BizDataPrefix,          topic: os2.biz.,                         kind: prefix, group: 业务软总线示例主题,
+      note: "业务数据不经管理面，见《架构说明》§5.2", label: 业务数据, desc: "业务传感、控制和任务数据走业务面" }

@@ -1,0 +1,138 @@
+{
+  "$comment": [
+    "OS² 类型注册表（M5 元模型正名，M6 域降为标签）——**本表就是挂载约束，不另写约束表**。",
+    "实体 id 去掉每段编号即得类型 id；类型在本表里 ⇒ 该挂载位置合法，不在 ⇒ 门禁拒。",
+    "想放开某个挂法＝往本表加一条，diff 一眼看清我方多承认了什么。",
+    "kind = 该层实体用哪份 schema 校验；null = 纯结构层（系统根），不单独建真件。",
+    "",
+    "【M6 变更：域不再是树的一层】此前是 qt.<域>.node，域（compute/cai/hmi/ops）占着 id 第 2 段。",
+    "问题有二：① 域是树里唯一一个『不是东西』的层——kind=null、没有真件、不能被引用；",
+    "② 同一个『属哪个域』存了两份（id 第 2 段 + node.domain 字段），实测可以公然打架而门禁全绿，",
+    "而投影建资源树读的是 domain 字段，页面上那个节点会跑到别的域下、id 却还写着原来那个。",
+    "现在：**树只表达承载隶属**（谁装在谁里/谁挂在谁上），域降为 node 的一个字段（横切标签）。",
+    "代价要说清：域在 id 里时，『谁能挂谁』是白名单穷举（不在表里就拒）；降成字段后",
+    "『现场设备只能挂采控节点』变成**字段级规则**（device 的父节点须 domain=cai），",
+    "由 os2_validate 把守并配判负自检。这是本次改动的实质代价，已知并接受。",
+    "",
+    "【层数是穷举出来的，不是无限的】设备套设备这类递归结构，深几层就得在本表写几条。",
+    "这是刻意的取舍：穷举 ⇒ 树能长成什么形状完全可查、不会冒出意外结构；代价是加层要改表。",
+    "设备链现开到 4 层（设备→板卡→通道→余量）。不够就照着往下加一条，别去改校验规则。",
+    "",
+    "【为什么服务不挂节点】服务会因故障迁移（M8 场景），挂节点下一迁移 id 就变。",
+    "服务的落位是 service.deploy 字段（可空＝由 OS 择优），那是**落位**不是**隶属**。",
+    "网络/物理机/任务链/契约面/产物面同样挂根：网络横切（一段网多节点共用，树表达不了）、",
+    "物理机横切（『跑在哪台机上』不是隶属——节点会因故障迁移到别的机器，做成 id 的一段就得改 id）、",
+    "链是跨域 DAG、接口与主题是契约面、清单与制品是产物面——都不具承载隶属。"
+  ],
+  "version": "2.0",
+  "domains": {
+    "$comment": "域＝node 的横切标签（M6 起不再是 id 的一段）。页面资源树按本表分区。",
+    "cai": {
+      "label": "采控域",
+      "zone": "OT"
+    },
+    "compute": {
+      "label": "计算域",
+      "zone": "IT"
+    },
+    "hmi": {
+      "label": "人机交互域",
+      "zone": "IT"
+    },
+    "ops": {
+      "label": "运维域（含岸侧）",
+      "zone": "IT"
+    },
+    "ai": {
+      "label": "智能域",
+      "zone": "AI"
+    }
+  },
+  "types": [
+    {
+      "path": "qt",
+      "kind": null,
+      "label": "系统（项目/客户面命名空间）"
+    },
+    {
+      "path": "qt.node",
+      "kind": "node",
+      "label": "节点（域由 node.domain 标注，不入 id）"
+    },
+    {
+      "path": "qt.node.pod",
+      "kind": "pod",
+      "label": "节点内计算资源实例"
+    },
+    {
+      "path": "qt.node.device",
+      "kind": "device",
+      "label": "现场设备（0720 边界②：仅状态观测，无命令面；父节点须 domain=cai）"
+    },
+    {
+      "path": "qt.node.device.device",
+      "kind": "device",
+      "label": "子设备（第 2 层，如板卡）"
+    },
+    {
+      "path": "qt.node.device.device.device",
+      "kind": "device",
+      "label": "子设备（第 3 层，如通道）"
+    },
+    {
+      "path": "qt.node.device.device.device.device",
+      "kind": "device",
+      "label": "子设备（第 4 层，预留一层余量）"
+    },
+    {
+      "path": "qt.service",
+      "kind": "service",
+      "label": "服务（不挂节点：服务会迁移，落位见 deploy 字段）"
+    },
+    {
+      "path": "qt.host",
+      "kind": "host",
+      "label": "物理机（横切，不入承载树：node.host 指向它，回答「哪些节点其实是同一台机器」）"
+    },
+    {
+      "path": "qt.location",
+      "kind": "location",
+      "label": "物理位置（横切，不入承载树：机柜/舱段/操作台/机位；成员由 located-in 反查，不写 members）"
+    },
+    {
+      "path": "qt.composite",
+      "kind": "composite",
+      "label": "逻辑聚合（横切，不入承载树：域/整系统；成员列在 members，是组成的唯一真相源）"
+    },
+    {
+      "path": "qt.network",
+      "kind": "network",
+      "label": "网络（横切，不入承载树）"
+    },
+    {
+      "path": "qt.chain",
+      "kind": "chain",
+      "label": "任务链（服务集 + 关系，跨域 DAG）"
+    },
+    {
+      "path": "qt.interface",
+      "kind": "interface",
+      "label": "服务接口（契约面）"
+    },
+    {
+      "path": "qt.topic",
+      "kind": "topic",
+      "label": "数据主题（契约面）"
+    },
+    {
+      "path": "qt.manifest",
+      "kind": "manifest",
+      "label": "部署清单（产物面）"
+    },
+    {
+      "path": "qt.artifact",
+      "kind": "artifact",
+      "label": "制品（产物面）"
+    }
+  ]
+}
