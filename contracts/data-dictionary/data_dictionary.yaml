@@ -79,6 +79,43 @@ fields:
 # 键集/类型 **不新增、不改语义**——仅效力升级；校验 opt-in 逐主题（bus.validate）、
 # 缺省关＝未启用主题行为零变化。type: number 者启用后走严格数值解析（拒静默 0）。
 messages:
+  ArtifactUploadPrepare:
+    frozen_ref: "appstore artifact transfer protocol v1"
+    req:
+      - { key: artifact_id, type: string, desc: "制品统一标识" }
+      - { key: version, type: string, desc: "制品版本" }
+      - { key: sha256, type: string, desc: "完整制品 SHA-256 十六进制摘要" }
+      - { key: total_bytes, type: number, desc: "完整制品原始字节数" }
+      - { key: sbom_ref, type: string, desc: "SBOM 引用", opt: true }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: upload_id, type: string, desc: "上传会话标识；接受时返回", opt: true }
+      - { key: chunk_bytes, type: number, desc: "允许的最大原始分块字节数；接受时返回", opt: true }
+      - { key: reason, type: string, desc: "拒绝原因；成功时为空", opt: true }
+  ArtifactUploadChunk:
+    frozen_ref: "appstore artifact transfer protocol v1"
+    req:
+      - { key: upload_id, type: string, desc: "上传会话标识" }
+      - { key: offset, type: number, desc: "本块在原始制品中的零基字节偏移" }
+      - { key: data_hex, type: string, desc: "原始分块的偶数长度十六进制编码" }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: next_offset, type: number, desc: "服务端期望的下一原始字节偏移", opt: true }
+      - { key: reason, type: string, desc: "拒绝原因；成功时为空", opt: true }
+  ArtifactUploadCommit:
+    frozen_ref: "appstore artifact transfer protocol v1"
+    req:
+      - { key: upload_id, type: string, desc: "上传会话标识" }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: reason, type: string, desc: "拒绝原因；成功时为空", opt: true }
+  ArtifactUploadAbort:
+    frozen_ref: "appstore artifact transfer protocol v1"
+    req:
+      - { key: upload_id, type: string, desc: "上传会话标识" }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: reason, type: string, desc: "拒绝原因；成功时为空", opt: true }
   ProcessReport:                        # RFC-0017：进程生命周期上报
     frozen_ref: "RFC-0017 §2.1"
     pub:

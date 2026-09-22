@@ -3,6 +3,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -58,6 +59,41 @@ Msg publish(ServiceContext& ctx, const std::string& id, const std::string& versi
       100);
   OS2_ASSERT(reply.has_value());
   return *reply;
+}
+
+std::string hex_encode(const std::string& bytes) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(bytes.size() * 2);
+  for (const unsigned char byte : bytes) {
+    encoded.push_back(digits[byte >> 4]);
+    encoded.push_back(digits[byte & 0x0f]);
+  }
+  return encoded;
+}
+
+Msg request(ServiceContext& ctx, const char* topic, Msg message) {
+  auto reply = ctx.buses.mgmt->request(topic, message, 100);
+  OS2_ASSERT(reply.has_value());
+  return *reply;
+}
+
+Msg prepare_upload(ServiceContext& ctx, const std::string& id, const std::string& version,
+                   const std::string& content, const std::string& digest = {}) {
+  return request(ctx, topics::ArtifactUploadPrepare,
+                 Msg{"ArtifactUploadPrepare", {{"artifact_id", id},
+                                                {"version", version},
+                                                {"sha256", digest.empty() ? ArtifactSealer::seal(content) : digest},
+                                                {"total_bytes", std::to_string(content.size())},
+                                                {"sbom_ref", "sbom://remote"}}});
+}
+
+Msg send_chunk(ServiceContext& ctx, const std::string& upload_id, std::uint64_t offset,
+               const std::string& bytes) {
+  return request(ctx, topics::ArtifactUploadChunk,
+                 Msg{"ArtifactUploadChunk", {{"upload_id", upload_id},
+                                              {"offset", std::to_string(offset)},
+                                              {"data_hex", hex_encode(bytes)}}});
 }
 
 }  // namespace
@@ -136,6 +172,132 @@ OS2_TEST(retry_is_idempotent_and_existing_version_cannot_be_replaced) {
       publish(ctx, "os2.pkg.demo", "2.0", ArtifactSealer::seal("replacement bytes"));
   OS2_ASSERT_EQ(replaced.get("accepted"), std::string("false"));
   OS2_ASSERT(replaced.get("reason").find("already exists") != std::string::npos);
+}
+
+OS2_TEST(cross_node_upload_streams_chunks_and_commits_without_shared_staging) {
+  Fixture f;
+  Config cfg = f.config();
+  cfg.set("store.upload_chunk_bytes", "65536");
+  ServiceContext ctx{BusPair::make_inproc(), cfg};
+  auto store = make_store(ctx);
+  OS2_ASSERT(store.init() && store.start());
+
+  std::string content;
+  content.reserve(150000);
+  for (int i = 0; i < 150000; ++i) content.push_back(static_cast<char>(i % 251));
+  const Msg prepared = prepare_upload(ctx, "os2.pkg.remote", "3.1.4", content);
+  OS2_ASSERT_EQ(prepared.get("accepted"), std::string("true"));
+  OS2_ASSERT_EQ(prepared.get_u64("chunk_bytes"), std::uint64_t{65536});
+  const std::string upload_id = prepared.get("upload_id");
+  std::uint64_t offset = 0;
+  while (offset < content.size()) {
+    const auto size = std::min<std::size_t>(65536, content.size() - offset);
+    const Msg chunk = send_chunk(ctx, upload_id, offset, content.substr(offset, size));
+    OS2_ASSERT_EQ(chunk.get("accepted"), std::string("true"));
+    offset += size;
+    OS2_ASSERT_EQ(chunk.get_u64("next_offset"), offset);
+  }
+  const Msg committed = request(ctx, topics::ArtifactUploadCommit,
+                                Msg{"ArtifactUploadCommit", {{"upload_id", upload_id}}});
+  OS2_ASSERT_EQ(committed.get("accepted"), std::string("true"));
+  OS2_ASSERT(store.find("os2.pkg.remote", "3.1.4").has_value());
+  OS2_ASSERT(!std::filesystem::exists(f.incoming / "os2.pkg.remote-3.1.4.artifact"));
+
+  const auto stored = f.repository / "os2.pkg.remote" / "3.1.4" / "artifact.bin";
+  std::ifstream input(stored, std::ios::binary);
+  const std::string copied{std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>()};
+  OS2_ASSERT_EQ(copied, content);
+  const Msg duplicate = request(ctx, topics::ArtifactUploadCommit,
+                                Msg{"ArtifactUploadCommit", {{"upload_id", upload_id}}});
+  OS2_ASSERT_EQ(duplicate.get("accepted"), std::string("false"));
+}
+
+OS2_TEST(upload_rejects_out_of_order_malformed_oversized_and_overflow_chunks) {
+  Fixture f;
+  Config cfg = f.config();
+  cfg.set("store.upload_chunk_bytes", "4");
+  ServiceContext ctx{BusPair::make_inproc(), cfg};
+  auto store = make_store(ctx);
+  OS2_ASSERT(store.init() && store.start());
+
+  const std::string content = "abcdef";
+  const Msg prepared = prepare_upload(ctx, "os2.pkg.strict", "1.0", content);
+  const std::string id = prepared.get("upload_id");
+  OS2_ASSERT_EQ(prepared.get("accepted"), std::string("true"));
+
+  const Msg out_of_order = send_chunk(ctx, id, 1, "ab");
+  OS2_ASSERT_EQ(out_of_order.get("accepted"), std::string("false"));
+  OS2_ASSERT_EQ(out_of_order.get_u64("next_offset"), std::uint64_t{0});
+  const Msg malformed = request(ctx, topics::ArtifactUploadChunk,
+                                Msg{"ArtifactUploadChunk", {{"upload_id", id},
+                                                             {"offset", "0"},
+                                                             {"data_hex", "0xz"}}});
+  OS2_ASSERT_EQ(malformed.get("accepted"), std::string("false"));
+  OS2_ASSERT_EQ(send_chunk(ctx, id, 0, "abcde").get("accepted"), std::string("false"));
+  OS2_ASSERT_EQ(send_chunk(ctx, id, 0, "abcd").get("accepted"), std::string("true"));
+  OS2_ASSERT_EQ(send_chunk(ctx, id, 4, "xyz").get("accepted"), std::string("false"));
+  OS2_ASSERT_EQ(send_chunk(ctx, id, 4, "ef").get("accepted"), std::string("true"));
+  OS2_ASSERT_EQ(request(ctx, topics::ArtifactUploadCommit,
+                        Msg{"ArtifactUploadCommit", {{"upload_id", id}}}).get("accepted"),
+                std::string("true"));
+}
+
+OS2_TEST(upload_commit_rejects_incomplete_or_digest_mismatch_and_cleans_session) {
+  Fixture f;
+  ServiceContext ctx{BusPair::make_inproc(), f.config()};
+  auto store = make_store(ctx);
+  OS2_ASSERT(store.init() && store.start());
+
+  Msg incomplete = prepare_upload(ctx, "os2.pkg.partial", "1", "abcd");
+  OS2_ASSERT_EQ(send_chunk(ctx, incomplete.get("upload_id"), 0, "ab").get("accepted"),
+                std::string("true"));
+  Msg incomplete_commit = request(
+      ctx, topics::ArtifactUploadCommit,
+      Msg{"ArtifactUploadCommit", {{"upload_id", incomplete.get("upload_id")}}});
+  OS2_ASSERT_EQ(incomplete_commit.get("accepted"), std::string("false"));
+
+  Msg mismatch = prepare_upload(ctx, "os2.pkg.mismatch", "1", "actual",
+                                ArtifactSealer::seal("different"));
+  OS2_ASSERT_EQ(send_chunk(ctx, mismatch.get("upload_id"), 0, "actual").get("accepted"),
+                std::string("true"));
+  Msg mismatch_commit = request(
+      ctx, topics::ArtifactUploadCommit,
+      Msg{"ArtifactUploadCommit", {{"upload_id", mismatch.get("upload_id")}}});
+  OS2_ASSERT_EQ(mismatch_commit.get("accepted"), std::string("false"));
+  OS2_ASSERT(!store.find("os2.pkg.partial").has_value());
+  OS2_ASSERT(!store.find("os2.pkg.mismatch").has_value());
+  for (const auto& entry : std::filesystem::directory_iterator(f.incoming / ".uploads"))
+    OS2_ASSERT(entry.path().filename().string().rfind(".upload.", 0) != 0);
+}
+
+OS2_TEST(upload_abort_and_restart_cleanup_remove_interrupted_sessions) {
+  Fixture f;
+  Config cfg = f.config();
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    auto store = make_store(ctx);
+    OS2_ASSERT(store.init() && store.start());
+    const Msg aborted = prepare_upload(ctx, "os2.pkg.abort", "1", "bytes");
+    OS2_ASSERT_EQ(request(ctx, topics::ArtifactUploadAbort,
+                          Msg{"ArtifactUploadAbort", {{"upload_id", aborted.get("upload_id")}}})
+                      .get("accepted"),
+                  std::string("true"));
+    const Msg interrupted = prepare_upload(ctx, "os2.pkg.interrupted", "1", "bytes");
+    OS2_ASSERT_EQ(send_chunk(ctx, interrupted.get("upload_id"), 0, "by").get("accepted"),
+                  std::string("true"));
+    // 不调用 stop：模拟上传过程中进程掉电，析构只关闭 fd，留下启动恢复证据。
+  }
+  bool found_stale = false;
+  for (const auto& entry : std::filesystem::directory_iterator(f.incoming / ".uploads"))
+    found_stale = found_stale || entry.path().filename().string().rfind(".upload.", 0) == 0;
+  OS2_ASSERT(found_stale);
+
+  ServiceContext restarted_ctx{BusPair::make_inproc(), cfg};
+  auto restarted = make_store(restarted_ctx);
+  OS2_ASSERT(restarted.init() && restarted.start());
+  for (const auto& entry : std::filesystem::directory_iterator(f.incoming / ".uploads"))
+    OS2_ASSERT(entry.path().filename().string().rfind(".upload.", 0) != 0);
 }
 
 OS2_TEST(concurrent_publish_uses_exclusive_no_overwrite_commit) {

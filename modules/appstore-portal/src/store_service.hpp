@@ -128,6 +128,9 @@ class StoreService : public Os2Service {
     return std::make_unique<DigestVerifier>();
   }
   virtual bool on_state_restored() { return true; }
+  // 派生接收器完成跨节点字节传输后，复用与 ArtifactPublish 完全相同的准入和登记链路。
+  // 保持 handle_publish 私有，避免派生类绕过该唯一入口直接修改索引。
+  Msg publish_artifact(const Msg& m) { return handle_publish(m); }
   std::vector<Artifact> registered_artifacts() const {
     std::vector<Artifact> result;
     result.reserve(artifacts_.size());

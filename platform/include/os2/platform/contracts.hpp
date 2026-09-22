@@ -86,48 +86,52 @@ inline constexpr const char* WL_ACTION_UNKNOWN          = "OS2-6004"; // workloa
 // ---------------------------------------------------------------------------
 namespace topics {
 // 服务注册中心
-inline constexpr const char* ServiceRegister           = "os2.mgmt.service.register";            // req/rep
-inline constexpr const char* ServiceHeartbeat          = "os2.mgmt.service.heartbeat";           // pub（v1.9/RFC-0009：timestamp 仅作证据；服务端接收时刻重置租约；严格大于 lease_ms 才过期）
-inline constexpr const char* ServiceCatalogQuery       = "os2.mgmt.service.catalog.query";       // req/rep（v1.1/RFC-0001 分页过滤；v1.9/RFC-0009 应答附逐记录 lease_ms，发现语义仍是服务级最佳实例）
+inline constexpr const char* ServiceRegister           = "os2.mgmt.service.register";               // req/rep
+inline constexpr const char* ServiceHeartbeat          = "os2.mgmt.service.heartbeat";              // pub（v1.9/RFC-0009：timestamp 仅作证据；服务端接收时刻重置租约；严格大于 lease_ms 才过期）
+inline constexpr const char* ServiceCatalogQuery       = "os2.mgmt.service.catalog.query";          // req/rep（v1.1/RFC-0001 分页过滤；v1.9/RFC-0009 应答附逐记录 lease_ms，发现语义仍是服务级最佳实例）
 // 运维管理器
-inline constexpr const char* ServiceInstanceStateQuery = "os2.mgmt.ops.service-instance.query";  // req/rep（v1.9/RFC-0009：/state.serviceInstances 的内部事实源，不参与服务发现或调度）
+inline constexpr const char* ServiceInstanceStateQuery = "os2.mgmt.ops.service-instance.query";     // req/rep（v1.9/RFC-0009：/state.serviceInstances 的内部事实源，不参与服务发现或调度）
 // 模型与数据管理器
-inline constexpr const char* ImpactQuery               = "os2.mgmt.model.impact.query";          // req/rep（v1.13/RFC-0013：只读确定性影响查询；显式故障 + M7 运行事实 → 排序稳定的节点/服务/链与传播路径）
+inline constexpr const char* ImpactQuery               = "os2.mgmt.model.impact.query";             // req/rep（v1.13/RFC-0013：只读确定性影响查询；显式故障 + M7 运行事实 → 排序稳定的节点/服务/链与传播路径）
 // 服务注册中心
-inline constexpr const char* RegistryAnnounce          = "os2.mgmt.service.announce";            // pub（纪元广播：重启收敛，M0.9/ADR-0008）
+inline constexpr const char* RegistryAnnounce          = "os2.mgmt.service.announce";               // pub（纪元广播：重启收敛，M0.9/ADR-0008）
 // 设备监管器
-inline constexpr const char* DeviceRegister            = "os2.mgmt.device.register";             // req/rep
-inline constexpr const char* DeviceStateTopic          = "os2.mgmt.device.state";                // pub
-inline constexpr const char* ProgramControlCommand     = "os2.mgmt.device.control";              // req/rep（Command→Reply）
+inline constexpr const char* DeviceRegister            = "os2.mgmt.device.register";                // req/rep
+inline constexpr const char* DeviceStateTopic          = "os2.mgmt.device.state";                   // pub
+inline constexpr const char* ProgramControlCommand     = "os2.mgmt.device.control";                 // req/rep（Command→Reply）
 // 资源管理器
-inline constexpr const char* ResourceInventoryQuery    = "os2.mgmt.resource.inventory.query";    // req/rep
-inline constexpr const char* ResourceSnapshot          = "os2.mgmt.resource.snapshot";           // pub
-inline constexpr const char* ResourceReport            = "os2.mgmt.resource.report";             // pub（节点画像上报：域侧资源 Agent → 总控聚合成全局资源树，M1.3/ADR-0015）
-inline constexpr const char* ResourceReserve           = "os2.mgmt.resource.reserve";            // req/rep（v1.2/RFC-0002：调度规划后预留节点份额（node_id/frac/holder/ttl_ms → accepted/reason），填充预留账本、评分即时折扣，TTL+释放双保险防泄漏）
-inline constexpr const char* ResourceRelease           = "os2.mgmt.resource.release";            // req/rep（v1.2/RFC-0002：链完成/失败/让渡释放预留（node_id/frac/holder → released））
+inline constexpr const char* ResourceInventoryQuery    = "os2.mgmt.resource.inventory.query";       // req/rep
+inline constexpr const char* ResourceSnapshot          = "os2.mgmt.resource.snapshot";              // pub
+inline constexpr const char* ResourceReport            = "os2.mgmt.resource.report";                // pub（节点画像上报：域侧资源 Agent → 总控聚合成全局资源树，M1.3/ADR-0015）
+inline constexpr const char* ResourceReserve           = "os2.mgmt.resource.reserve";               // req/rep（v1.2/RFC-0002：调度规划后预留节点份额（node_id/frac/holder/ttl_ms → accepted/reason），填充预留账本、评分即时折扣，TTL+释放双保险防泄漏）
+inline constexpr const char* ResourceRelease           = "os2.mgmt.resource.release";               // req/rep（v1.2/RFC-0002：链完成/失败/让渡释放预留（node_id/frac/holder → released））
 // 调度器
-inline constexpr const char* ServiceChainSubmit        = "os2.mgmt.chain.submit";                // req/rep（v1.12/RFC-0012：同步执行并返回终态结果；不是仅表示接收的 ACK）
-inline constexpr const char* ExecutionFeedback         = "os2.mgmt.chain.feedback";              // pub（v1.12/RFC-0012：每次提交恰好一条独立整链终态事实，正式测试不以请求应答代替该观察）
-inline constexpr const char* ChainStepEvent            = "os2.mgmt.chain.step";                  // pub（v1.12/RFC-0012：逐步派发事实；dispatched/completed 使用 OS2-0000，failed 使用失败码，ts 为节点 Unix epoch ms）
-inline constexpr const char* StepDispatch              = "os2.mgmt.chain.step.dispatch";         // req/rep（双总线隔离：调度器经管理面派发计算步到落位节点的执行代理，代理本地转调业务面服务（core 不经手业务数据）。节点特定主题——实际主题追加 .<node_id>（如 os2.mgmt.chain.step.dispatch.compute-01），各域执行代理仅 serve 自身节点主题以保证单应答路由）
+inline constexpr const char* ServiceChainSubmit        = "os2.mgmt.chain.submit";                   // req/rep（v1.12/RFC-0012：同步执行并返回终态结果；不是仅表示接收的 ACK）
+inline constexpr const char* ExecutionFeedback         = "os2.mgmt.chain.feedback";                 // pub（v1.12/RFC-0012：每次提交恰好一条独立整链终态事实，正式测试不以请求应答代替该观察）
+inline constexpr const char* ChainStepEvent            = "os2.mgmt.chain.step";                     // pub（v1.12/RFC-0012：逐步派发事实；dispatched/completed 使用 OS2-0000，failed 使用失败码，ts 为节点 Unix epoch ms）
+inline constexpr const char* StepDispatch              = "os2.mgmt.chain.step.dispatch";            // req/rep（双总线隔离：调度器经管理面派发计算步到落位节点的执行代理，代理本地转调业务面服务（core 不经手业务数据）。节点特定主题——实际主题追加 .<node_id>（如 os2.mgmt.chain.step.dispatch.compute-01），各域执行代理仅 serve 自身节点主题以保证单应答路由）
 // 运维管理器
-inline constexpr const char* MetricIngest              = "os2.mgmt.ops.metric";                  // pub
-inline constexpr const char* AlarmEvent                = "os2.mgmt.ops.alarm";                   // pub
-inline constexpr const char* LogSliceExport            = "os2.mgmt.ops.logslice.export";         // req/rep
+inline constexpr const char* MetricIngest              = "os2.mgmt.ops.metric";                     // pub
+inline constexpr const char* AlarmEvent                = "os2.mgmt.ops.alarm";                      // pub
+inline constexpr const char* LogSliceExport            = "os2.mgmt.ops.logslice.export";            // req/rep
 // 模型与数据管理器
-inline constexpr const char* ModelSubmit               = "os2.mgmt.model.submit";                // req/rep（v1.4/RFC-0004（F-13 收编）：模型包提交与校验（model_id/kind/version/payload → passed/issues/compat），同 id 再提交过兼容门）
-inline constexpr const char* ModelQuery                = "os2.mgmt.model.query";                 // req/rep（v1.4/RFC-0004（F-13 收编）：模型包查询（model_id → found+包体））
+inline constexpr const char* ModelSubmit               = "os2.mgmt.model.submit";                   // req/rep（v1.4/RFC-0004（F-13 收编）：模型包提交与校验（model_id/kind/version/payload → passed/issues/compat），同 id 再提交过兼容门）
+inline constexpr const char* ModelQuery                = "os2.mgmt.model.query";                    // req/rep（v1.4/RFC-0004（F-13 收编）：模型包查询（model_id → found+包体））
 // 安全管理器
-inline constexpr const char* PolicyCheck               = "os2.mgmt.security.policy.check";       // req/rep
-inline constexpr const char* AuditEvent                = "os2.mgmt.security.audit";              // pub
+inline constexpr const char* PolicyCheck               = "os2.mgmt.security.policy.check";          // req/rep
+inline constexpr const char* AuditEvent                = "os2.mgmt.security.audit";                 // pub
 // 应用商店与门户
-inline constexpr const char* ArtifactPublish           = "os2.mgmt.store.artifact.publish";      // req/rep
-inline constexpr const char* ActivationCommand         = "os2.mgmt.store.activation";            // req/rep
+inline constexpr const char* ArtifactPublish           = "os2.mgmt.store.artifact.publish";         // req/rep
+inline constexpr const char* ArtifactUploadPrepare     = "os2.mgmt.store.artifact.upload.prepare";  // req/rep
+inline constexpr const char* ArtifactUploadChunk       = "os2.mgmt.store.artifact.upload.chunk";    // req/rep
+inline constexpr const char* ArtifactUploadCommit      = "os2.mgmt.store.artifact.upload.commit";   // req/rep
+inline constexpr const char* ArtifactUploadAbort       = "os2.mgmt.store.artifact.upload.abort";    // req/rep
+inline constexpr const char* ActivationCommand         = "os2.mgmt.store.activation";               // req/rep
 // 执行管理器
-inline constexpr const char* ProcessReport             = "os2.mgmt.exec.process";                // pub（RFC-0017：EM 与服务进程共同上报；running 只能由 reporter=service 置位——EM 只知道 fork 成功）
-inline constexpr const char* ProcessControl            = "os2.mgmt.exec.control";                // req/rep（RFC-0017：start 由 EM 执行（进程还没起，自己收不到）；stop/restart 服务进程自身也订阅）
+inline constexpr const char* ProcessReport             = "os2.mgmt.exec.process";                   // pub（RFC-0017：EM 与服务进程共同上报；running 只能由 reporter=service 置位——EM 只知道 fork 成功）
+inline constexpr const char* ProcessControl            = "os2.mgmt.exec.control";                   // req/rep（RFC-0017：start 由 EM 执行（进程还没起，自己收不到）；stop/restart 服务进程自身也订阅）
 // 业务软总线示例主题
-inline constexpr const char* BizDataPrefix             = "os2.biz.";                             // prefix（业务数据不经管理面，见《架构说明》§5.2）
+inline constexpr const char* BizDataPrefix             = "os2.biz.";                                // prefix（业务数据不经管理面，见《架构说明》§5.2）
 }  // namespace topics
 
 // ---------------------------------------------------------------------------
@@ -287,6 +291,51 @@ inline constexpr const char* const kTok_health[] = {"ok", "degraded", "down", nu
 inline constexpr const char* const kTok_processAction[] = {"start", "stop", "restart", nullptr};
 inline constexpr const char* const kTok_processReporter[] = {"em", "service", nullptr};
 inline constexpr const char* const kTok_processState[] = {"planned", "starting", "running", "stopping", "exited", "failed", nullptr};
+
+inline constexpr Field kFields_ArtifactUploadPrepare_req[] = {
+  {"artifact_id", Kind::String, false, false, nullptr},
+  {"version", Kind::String, false, false, nullptr},
+  {"sha256", Kind::String, false, false, nullptr},
+  {"total_bytes", Kind::Number, false, false, nullptr},
+  {"sbom_ref", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadPrepare_rep[] = {
+  {"accepted", Kind::String, false, false, nullptr},
+  {"upload_id", Kind::String, true, false, nullptr},
+  {"chunk_bytes", Kind::Number, true, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadChunk_req[] = {
+  {"upload_id", Kind::String, false, false, nullptr},
+  {"offset", Kind::Number, false, false, nullptr},
+  {"data_hex", Kind::String, false, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadChunk_rep[] = {
+  {"accepted", Kind::String, false, false, nullptr},
+  {"next_offset", Kind::Number, true, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadCommit_req[] = {
+  {"upload_id", Kind::String, false, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadCommit_rep[] = {
+  {"accepted", Kind::String, false, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadAbort_req[] = {
+  {"upload_id", Kind::String, false, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactUploadAbort_rep[] = {
+  {"accepted", Kind::String, false, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+};
 
 inline constexpr Field kFields_ProcessReport_pub[] = {
   {"node_id", Kind::String, false, false, nullptr},
@@ -536,6 +585,14 @@ inline constexpr Field kFields_ProgramControlCommand_req[] = {
 };
 
 inline constexpr TopicSpec kMsgSpecs[] = {
+  {"ArtifactUploadPrepare", "req", kFields_ArtifactUploadPrepare_req, 5},
+  {"ArtifactUploadPrepare", "rep", kFields_ArtifactUploadPrepare_rep, 4},
+  {"ArtifactUploadChunk", "req", kFields_ArtifactUploadChunk_req, 3},
+  {"ArtifactUploadChunk", "rep", kFields_ArtifactUploadChunk_rep, 3},
+  {"ArtifactUploadCommit", "req", kFields_ArtifactUploadCommit_req, 1},
+  {"ArtifactUploadCommit", "rep", kFields_ArtifactUploadCommit_rep, 2},
+  {"ArtifactUploadAbort", "req", kFields_ArtifactUploadAbort_req, 1},
+  {"ArtifactUploadAbort", "rep", kFields_ArtifactUploadAbort_rep, 2},
   {"ProcessReport", "pub", kFields_ProcessReport_pub, 9},
   {"ProcessControl", "req", kFields_ProcessControl_req, 3},
   {"ProcessControl", "rep", kFields_ProcessControl_rep, 3},

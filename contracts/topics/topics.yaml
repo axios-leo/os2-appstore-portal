@@ -43,6 +43,10 @@ topics:
   - { name: PolicyCheck,            topic: os2.mgmt.security.policy.check,   kind: reqrep, group: 安全管理器, label: 安全校验, desc: "检查当前动作是否满足权限和会签规则" }
   - { name: AuditEvent,             topic: os2.mgmt.security.audit,          kind: pub,    group: 安全管理器, label: 安全审计, desc: "记录安全放行、拦截和越权尝试" }
   - { name: ArtifactPublish,        topic: os2.mgmt.store.artifact.publish,  kind: reqrep, group: 应用商店与门户, label: 制品发布, desc: "把软件制品发布到可部署仓库" }
+  - { name: ArtifactUploadPrepare,  topic: os2.mgmt.store.artifact.upload.prepare, kind: reqrep, group: 应用商店与门户, label: 制品上传准备, desc: "创建跨节点制品上传会话并协商分块大小" }
+  - { name: ArtifactUploadChunk,    topic: os2.mgmt.store.artifact.upload.chunk,   kind: reqrep, group: 应用商店与门户, label: 制品上传分块, desc: "按顺序传输十六进制编码的制品分块" }
+  - { name: ArtifactUploadCommit,   topic: os2.mgmt.store.artifact.upload.commit,  kind: reqrep, group: 应用商店与门户, label: 制品上传提交, desc: "校验完整上传并提交到不可变制品仓" }
+  - { name: ArtifactUploadAbort,    topic: os2.mgmt.store.artifact.upload.abort,   kind: reqrep, group: 应用商店与门户, label: 制品上传取消, desc: "取消上传会话并清理商店端临时文件" }
   - { name: ActivationCommand,      topic: os2.mgmt.store.activation,        kind: reqrep, group: 应用商店与门户, label: 灰度/回滚, desc: "按比例激活新版本，必要时回滚" }
   - { name: ProcessReport,          topic: os2.mgmt.exec.process,            kind: pub,    group: 执行管理器,
       note: "RFC-0017：EM 与服务进程共同上报；running 只能由 reporter=service 置位——EM 只知道 fork 成功",

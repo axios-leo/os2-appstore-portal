@@ -1,7 +1,8 @@
 // =============================================================================
 // impl/artifact_receiver.hpp — 端侧制品接收：流式复核、独占提交、仓库一致性检查
 //
-// 暂存约定：<incoming>/<artifact_id>-<version>.artifact
+// 兼容暂存约定：<incoming>/<artifact_id>-<version>.artifact
+// 跨节点传输：prepare → chunk（顺序、hex）→ commit；可选 abort 主动清理。
 // 仓库布局：<repository>/<artifact_id>/<version>/artifact.bin
 // 入库先在目标目录创建随机、独占的临时文件，流式复制并计算 SHA-256；校验通过后
 // 通过 link(2) 以“不覆盖”语义提交。崩溃残留和孤儿制品可在启动时显式启用 GC。
@@ -13,12 +14,14 @@
 #include <unistd.h>
 
 #include <array>
+#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,25 @@ inline bool write_all(int fd, const char* data, std::size_t size) {
     if (written <= 0) return false;
     data += written;
     size -= static_cast<std::size_t>(written);
+  }
+  return true;
+}
+
+inline bool decode_hex(const std::string& encoded, std::string& decoded) {
+  if (encoded.size() % 2 != 0) return false;
+  auto nibble = [](char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+  };
+  decoded.clear();
+  decoded.reserve(encoded.size() / 2);
+  for (std::size_t i = 0; i < encoded.size(); i += 2) {
+    const int hi = nibble(encoded[i]);
+    const int lo = nibble(encoded[i + 1]);
+    if (hi < 0 || lo < 0) return false;
+    decoded.push_back(static_cast<char>((hi << 4) | lo));
   }
   return true;
 }
@@ -130,7 +152,13 @@ class FilesystemArtifactVerifier final : public IArtifactVerifier {
         repository_dir_(std::move(repository_dir)),
         max_artifact_bytes_(max_artifact_bytes) {}
 
+  // IBus 的服务派发是单线程模型。跨节点 commit 在同一调用栈中设置一次性来源，
+  // 让既有发布链直接读取上传会话文件，避免创建可能在掉电后遗留的兼容暂存链接。
+  void use_source_once(std::filesystem::path source) { next_source_ = std::move(source); }
+
   bool verify(const Artifact& artifact, std::string& reason) override {
+    const std::filesystem::path source_override = std::move(next_source_);
+    next_source_.clear();
     if (!inner_ || !inner_->verify(artifact, reason)) return false;
     if (incoming_dir_.empty() || repository_dir_.empty()) {
       reason = "artifact receiver directories are not configured";
@@ -146,8 +174,10 @@ class FilesystemArtifactVerifier final : public IArtifactVerifier {
     }
 
     const std::filesystem::path source =
-        std::filesystem::path(incoming_dir_) /
-        (artifact.artifact_id + "-" + artifact.version + ".artifact");
+        source_override.empty()
+            ? std::filesystem::path(incoming_dir_) /
+                  (artifact.artifact_id + "-" + artifact.version + ".artifact")
+            : source_override;
     const std::filesystem::path destination = std::filesystem::path(repository_dir_) /
                                               artifact.artifact_id / artifact.version /
                                               "artifact.bin";
@@ -232,6 +262,7 @@ class FilesystemArtifactVerifier final : public IArtifactVerifier {
   std::string incoming_dir_;
   std::string repository_dir_;
   std::uint64_t max_artifact_bytes_;
+  std::filesystem::path next_source_;
 };
 
 class ReceivingStore final : public GrayscaleStore {
@@ -239,11 +270,31 @@ class ReceivingStore final : public GrayscaleStore {
   using GrayscaleStore::GrayscaleStore;
 
  protected:
+  bool on_init() override {
+    if (!cleanup_stale_uploads() || !GrayscaleStore::on_init()) return false;
+    mgmt().serve(topics::ArtifactUploadPrepare,
+                 [this](const Msg& m) { return handle_upload_prepare(m); });
+    mgmt().serve(topics::ArtifactUploadChunk,
+                 [this](const Msg& m) { return handle_upload_chunk(m); });
+    mgmt().serve(topics::ArtifactUploadCommit,
+                 [this](const Msg& m) { return handle_upload_commit(m); });
+    mgmt().serve(topics::ArtifactUploadAbort,
+                 [this](const Msg& m) { return handle_upload_abort(m); });
+    return true;
+  }
+
+  void on_stop() override {
+    clear_uploads();
+    GrayscaleStore::on_stop();
+  }
+
   std::unique_ptr<IArtifactVerifier> make_verifier() override {
-    return std::make_unique<FilesystemArtifactVerifier>(
+    auto verifier = std::make_unique<FilesystemArtifactVerifier>(
         GrayscaleStore::make_verifier(), config().get("store.incoming_dir"),
         config().get("store.repository_dir"),
         config().get_u64("store.max_artifact_bytes", 256ULL * 1024ULL * 1024ULL));
+    filesystem_verifier_ = verifier.get();
+    return verifier;
   }
 
   bool on_state_restored() override {
@@ -317,6 +368,253 @@ class ReceivingStore final : public GrayscaleStore {
     }
     return true;
   }
+
+ private:
+  struct UploadSession {
+    std::string artifact_id;
+    std::string version;
+    std::string sha256;
+    std::string sbom_ref;
+    std::filesystem::path temporary;
+    int fd{-1};
+    std::uint64_t total_bytes{0};
+    std::uint64_t received_bytes{0};
+    std::uint64_t last_activity_ms{0};
+    os2::hash::Sha256Stream digest;
+
+    ~UploadSession() {
+      if (fd >= 0) (void)::close(fd);
+    }
+  };
+
+  std::filesystem::path upload_directory() const {
+    return std::filesystem::path(config().get("store.incoming_dir")) / ".uploads";
+  }
+
+  std::uint64_t chunk_bytes() const {
+    const auto configured = config().get_u64("store.upload_chunk_bytes", 64ULL * 1024ULL);
+    return std::max<std::uint64_t>(1, std::min<std::uint64_t>(configured, 1024ULL * 1024ULL));
+  }
+
+  bool cleanup_stale_uploads() {
+    const auto incoming = config().get("store.incoming_dir");
+    if (incoming.empty()) {
+      log().warn("store_upload_init_failed", "store.incoming_dir is empty");
+      return false;
+    }
+    const auto directory = upload_directory();
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    if (ec) {
+      log().warn("store_upload_init_failed", "cannot create upload directory");
+      return false;
+    }
+    std::filesystem::directory_iterator it(directory, ec), end;
+    while (!ec && it != end) {
+      const auto path = it->path();
+      const auto name = path.filename().string();
+      if (name.rfind(".upload.", 0) == 0) {
+        std::error_code status_ec;
+        const auto status = std::filesystem::symlink_status(path, status_ec);
+        if (status_ec || (!std::filesystem::is_regular_file(status) &&
+                          !std::filesystem::is_symlink(status))) {
+          log().warn("store_upload_cleanup_failed", path.string());
+          return false;
+        }
+        std::error_code remove_ec;
+        std::filesystem::remove(path, remove_ec);
+        if (remove_ec) {
+          log().warn("store_upload_cleanup_failed", path.string());
+          return false;
+        }
+        log().info("store_upload_collected", path.string());
+      }
+      it.increment(ec);
+    }
+    if (ec) {
+      log().warn("store_upload_cleanup_failed", "cannot scan upload directory");
+      return false;
+    }
+    artifact_fs::fsync_directory(directory);
+    return true;
+  }
+
+  void discard_upload(const std::string& upload_id) {
+    auto it = uploads_.find(upload_id);
+    if (it == uploads_.end()) return;
+    const auto path = it->second->temporary;
+    uploads_.erase(it);  // 先关闭 fd，再删除目录项。
+    (void)::unlink(path.c_str());
+    artifact_fs::fsync_directory(upload_directory());
+  }
+
+  void clear_uploads() {
+    while (!uploads_.empty()) discard_upload(uploads_.begin()->first);
+  }
+
+  void expire_uploads() {
+    const auto now = now_ms();
+    const auto ttl = config().get_u64("store.upload_session_ttl_ms", 15ULL * 60ULL * 1000ULL);
+    std::vector<std::string> expired;
+    for (const auto& entry : uploads_)
+      if (ttl == 0 || now - entry.second->last_activity_ms > ttl) expired.push_back(entry.first);
+    for (const auto& id : expired) discard_upload(id);
+  }
+
+  static Msg upload_rejected(const char* type, const std::string& reason,
+                             std::uint64_t next_offset = 0) {
+    Msg reply{type, {{"accepted", "false"}, {"reason", reason}}};
+    if (std::string(type) == "ArtifactUploadChunkReply")
+      reply.kv["next_offset"] = std::to_string(next_offset);
+    return reply;
+  }
+
+  Msg handle_upload_prepare(const Msg& m) {
+    expire_uploads();
+    const auto total = m.get_u64_checked("total_bytes");
+    if (!total) return upload_rejected("ArtifactUploadPrepareReply", "total_bytes is required and must be numeric");
+    const auto max_bytes =
+        config().get_u64("store.max_artifact_bytes", 256ULL * 1024ULL * 1024ULL);
+    if (*total > max_bytes)
+      return upload_rejected("ArtifactUploadPrepareReply", "artifact exceeds store.max_artifact_bytes");
+    if (uploads_.size() >= config().get_u64("store.max_upload_sessions", 32))
+      return upload_rejected("ArtifactUploadPrepareReply", "too many active upload sessions");
+
+    Artifact artifact{m.get("artifact_id"), m.get("version"), m.get("sha256"),
+                      m.get("sbom_ref"), "published", 0};
+    Sha256FormatVerifier format;
+    std::string reason;
+    if (!format.verify(artifact, reason) ||
+        !artifact_fs::safe_component(artifact.version, 64))
+      return upload_rejected("ArtifactUploadPrepareReply",
+                             reason.empty() ? "version has illegal char (allowed: alnum . _ -)" : reason);
+
+    std::string pattern = (upload_directory() / ".upload.XXXXXX").string();
+    std::vector<char> name(pattern.begin(), pattern.end());
+    name.push_back('\0');
+    const int fd = ::mkstemp(name.data());
+    if (fd < 0)
+      return upload_rejected("ArtifactUploadPrepareReply", "cannot create upload temporary file");
+    (void)::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    (void)::fchmod(fd, 0600);
+
+    std::string upload_id;
+    do upload_id = gen_id("upload"); while (uploads_.count(upload_id) != 0);
+    auto session = std::make_unique<UploadSession>();
+    session->artifact_id = std::move(artifact.artifact_id);
+    session->version = std::move(artifact.version);
+    session->sha256 = artifact_fs::normalize_hex(std::move(artifact.sha256));
+    session->sbom_ref = std::move(artifact.sbom_ref);
+    session->temporary = name.data();
+    session->fd = fd;
+    session->total_bytes = *total;
+    session->last_activity_ms = now_ms();
+    uploads_.emplace(upload_id, std::move(session));
+    artifact_fs::fsync_directory(upload_directory());
+    return Msg{"ArtifactUploadPrepareReply",
+               {{"accepted", "true"}, {"upload_id", upload_id},
+                {"chunk_bytes", std::to_string(chunk_bytes())}}};
+  }
+
+  Msg handle_upload_chunk(const Msg& m) {
+    expire_uploads();
+    const auto id = m.get("upload_id");
+    auto it = uploads_.find(id);
+    if (it == uploads_.end())
+      return upload_rejected("ArtifactUploadChunkReply", "unknown or expired upload_id");
+    auto& session = *it->second;
+    const auto offset = m.get_u64_checked("offset");
+    if (!offset)
+      return upload_rejected("ArtifactUploadChunkReply", "offset is required and must be numeric",
+                             session.received_bytes);
+    if (*offset != session.received_bytes)
+      return upload_rejected("ArtifactUploadChunkReply", "unexpected chunk offset",
+                             session.received_bytes);
+    const auto& encoded = m.get("data_hex");
+    if (encoded.size() > chunk_bytes() * 2)
+      return upload_rejected("ArtifactUploadChunkReply", "chunk exceeds store.upload_chunk_bytes",
+                             session.received_bytes);
+    std::string bytes;
+    if (!artifact_fs::decode_hex(encoded, bytes))
+      return upload_rejected("ArtifactUploadChunkReply", "data_hex is not valid even-length hex",
+                             session.received_bytes);
+    if (bytes.empty() && session.received_bytes < session.total_bytes)
+      return upload_rejected("ArtifactUploadChunkReply", "empty chunk does not advance upload",
+                             session.received_bytes);
+    if (bytes.size() > session.total_bytes - session.received_bytes)
+      return upload_rejected("ArtifactUploadChunkReply", "chunk exceeds declared total_bytes",
+                             session.received_bytes);
+    if (!artifact_fs::write_all(session.fd, bytes.data(), bytes.size())) {
+      discard_upload(id);
+      return upload_rejected("ArtifactUploadChunkReply", "cannot write upload temporary file");
+    }
+    session.digest.update(bytes);
+    session.received_bytes += bytes.size();
+    session.last_activity_ms = now_ms();
+    return Msg{"ArtifactUploadChunkReply",
+               {{"accepted", "true"},
+                {"next_offset", std::to_string(session.received_bytes)}}};
+  }
+
+  Msg handle_upload_commit(const Msg& m) {
+    expire_uploads();
+    const auto id = m.get("upload_id");
+    auto it = uploads_.find(id);
+    if (it == uploads_.end())
+      return upload_rejected("ArtifactUploadCommitReply", "unknown or expired upload_id");
+    auto session = std::move(it->second);
+    uploads_.erase(it);
+    auto cleanup = [&]() {
+      if (session->fd >= 0) {
+        (void)::close(session->fd);
+        session->fd = -1;
+      }
+      (void)::unlink(session->temporary.c_str());
+      artifact_fs::fsync_directory(upload_directory());
+    };
+    if (session->received_bytes != session->total_bytes) {
+      cleanup();
+      return upload_rejected("ArtifactUploadCommitReply", "upload is incomplete");
+    }
+    const std::string actual = os2::hash::hex(session->digest.finalize());
+    if (actual != session->sha256) {
+      cleanup();
+      return upload_rejected("ArtifactUploadCommitReply", "uploaded artifact sha256 mismatch");
+    }
+    if (::fsync(session->fd) != 0 || ::close(session->fd) != 0) {
+      session->fd = -1;
+      cleanup();
+      return upload_rejected("ArtifactUploadCommitReply", "cannot sync upload temporary file");
+    }
+    session->fd = -1;
+
+    if (!filesystem_verifier_) {
+      cleanup();
+      return upload_rejected("ArtifactUploadCommitReply", "artifact verifier is unavailable");
+    }
+    filesystem_verifier_->use_source_once(session->temporary);
+    const Msg published = publish_artifact(
+        Msg{"ArtifactPublish", {{"artifact_id", session->artifact_id},
+                                 {"version", session->version},
+                                 {"sha256", session->sha256},
+                                 {"sbom_ref", session->sbom_ref}}});
+    cleanup();
+    if (published.get("accepted") != "true")
+      return upload_rejected("ArtifactUploadCommitReply", published.get("reason", "artifact publish rejected"));
+    return Msg{"ArtifactUploadCommitReply", {{"accepted", "true"}}};
+  }
+
+  Msg handle_upload_abort(const Msg& m) {
+    expire_uploads();
+    const auto id = m.get("upload_id");
+    if (uploads_.count(id) == 0)
+      return upload_rejected("ArtifactUploadAbortReply", "unknown or expired upload_id");
+    discard_upload(id);
+    return Msg{"ArtifactUploadAbortReply", {{"accepted", "true"}}};
+  }
+
+  std::map<std::string, std::unique_ptr<UploadSession>> uploads_;
+  FilesystemArtifactVerifier* filesystem_verifier_{nullptr};
 };
 
 }  // namespace os2::store::impl
