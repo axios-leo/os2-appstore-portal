@@ -71,7 +71,14 @@ class StoreService : public Os2Service {
   // 按制品 id 查询内存中的制品登记记录，返回制品副本
   // optional 表示“可能有结果，也可能没有”，调用方必须先检查 has_value()。
   std::optional<Artifact> find(const std::string& id) const {
-    auto it = artifacts_.find(id);
+    const auto current = current_versions_.find(id);
+    if (current == current_versions_.end()) return std::nullopt;
+    return find(id, current->second);
+  }
+
+  // 精确查询某个版本；同一制品的历史版本不会因新版本发布而被覆盖。
+  std::optional<Artifact> find(const std::string& id, const std::string& version) const {
+    const auto it = artifacts_.find(ArtifactKey{id, version});
     if (it == artifacts_.end()) return std::nullopt;
     return it->second;
   }
@@ -138,9 +145,10 @@ class StoreService : public Os2Service {
     if (a.artifact_id.empty() || !verifier_->verify(a, reason))
       return Msg{"ArtifactPublishReply", {{"accepted", "false"}, {"reason", reason}}};
 
-    // map 的 [] 会按 artifact_id 新增或覆盖记录。更严格的“同版本不可替换”保护
-    // 位于 FilesystemArtifactVerifier：只有真实制品文件通过后才会走到这里。
-    artifacts_[a.artifact_id] = a;
+    // 用 (artifact_id, version) 作为唯一键，保留同一制品的全部历史版本。
+    // current_versions_ 保持旧接口语义：find(id) 和激活命令仍指向最近发布版本。
+    artifacts_[ArtifactKey{a.artifact_id, a.version}] = a;
+    current_versions_[a.artifact_id] = a.version;
 
     // 只标记“状态已改变”，真正写盘由 persist_tick() 或 on_stop() 聚合执行。
     state_dirty_ = true;
@@ -154,7 +162,10 @@ class StoreService : public Os2Service {
   Msg handle_activation(const Msg& m) {
     // 把通用消息解析为统一 Command；主要使用 target_id、command_type、operator_id。
     Command c = command_from(m);  // command_type: activate / rollback
-    auto it = artifacts_.find(c.target_id);
+    const auto current = current_versions_.find(c.target_id);
+    if (current == current_versions_.end())
+      return to_msg(Reply::failure(c, errc::SVC_NOT_REGISTERED, "unknown-artifact"));
+    auto it = artifacts_.find(ArtifactKey{c.target_id, current->second});
 
     // 只能操作已经发布并登记的制品。Reply::failure 会带统一错误码与当前状态。
     if (it == artifacts_.end())
@@ -191,22 +202,27 @@ class StoreService : public Os2Service {
   // ---------------------------------------------------------------------------
   // 状态持久化：内存 → 文件
   // ---------------------------------------------------------------------------
-  // F-07 D2 落盘：制品行 'A\t…6 字段' + 回滚点行 'R\t<id>'；原子替换写（无半文件）。
+  // V2 状态文件把所有字符串转成十六进制，避免字段中的制表符或换行注入伪造记录。
   void persist_state(bool force) {
     const std::string path = config().get("store.persist_path");
 
     // 未配置路径时关闭持久化；非强制模式下，没有修改也不重复写盘。
     if (path.empty() || (!state_dirty_ && !force)) return;
-    std::string body;
+    std::string body = "V\t2\n";
 
-    // 每个制品写成一行 TSV：
-    // A、id、版本、摘要、SBOM、状态、发布时间。\t 是列分隔符，\n 是行结束符。
-    for (auto& [id, a] : artifacts_)
-      body += "A\t" + a.artifact_id + '\t' + a.version + '\t' + a.sha256 + '\t' +
-              a.sbom_ref + '\t' + a.status + '\t' + std::to_string(a.published_ms) + '\n';
+    for (const auto& entry : artifacts_) {
+      const auto& a = entry.second;
+      body += "A\t" + encode_field(a.artifact_id) + '\t' + encode_field(a.version) + '\t' +
+              encode_field(a.sha256) + '\t' + encode_field(a.sbom_ref) + '\t' +
+              encode_field(a.status) + '\t' + std::to_string(a.published_ms) + '\n';
+    }
+
+    // C 行保存每个 ID 当前指向的版本，兼容只传 artifact_id 的现有激活接口。
+    for (const auto& [id, version] : current_versions_)
+      body += "C\t" + encode_field(id) + '\t' + encode_field(version) + '\n';
 
     // R 行单独保存回滚点，便于 restore_state() 按首列区分记录类型。
-    if (!rollback_point_.empty()) body += "R\t" + rollback_point_ + '\n';
+    if (!rollback_point_.empty()) body += "R\t" + encode_field(rollback_point_) + '\n';
 
     // atomic_write 先写临时文件再原子替换目标文件，避免异常中断留下半个状态文件。
     if (!os2::fsio::atomic_write(path, body)) {
@@ -221,6 +237,36 @@ class StoreService : public Os2Service {
   // ---------------------------------------------------------------------------
   // 状态恢复：文件 → 内存
   // ---------------------------------------------------------------------------
+  static std::string encode_field(const std::string& value) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(value.size() * 2);
+    for (const unsigned char ch : value) {
+      encoded.push_back(kHex[ch >> 4]);
+      encoded.push_back(kHex[ch & 0x0f]);
+    }
+    return encoded;
+  }
+
+  static bool decode_field(const std::string& encoded, std::string& value) {
+    if (encoded.size() % 2 != 0) return false;
+    auto nibble = [](char ch) -> int {
+      if (ch >= '0' && ch <= '9') return ch - '0';
+      if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+      if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+      return -1;
+    };
+    value.clear();
+    value.reserve(encoded.size() / 2);
+    for (std::size_t i = 0; i < encoded.size(); i += 2) {
+      const int hi = nibble(encoded[i]);
+      const int lo = nibble(encoded[i + 1]);
+      if (hi < 0 || lo < 0) return false;
+      value.push_back(static_cast<char>((hi << 4) | lo));
+    }
+    return true;
+  }
+
   void restore_state() {
     const std::string path = config().get("store.persist_path");
     if (path.empty()) return;
@@ -229,7 +275,9 @@ class StoreService : public Os2Service {
     // 首次运行时文件可能不存在，这不是故障，按空商店继续启动。
     if (!f) return;
     std::string line;
+    bool encoded_v2 = false;
     while (std::getline(f, line)) {
+      if (line == "V\t2") { encoded_v2 = true; continue; }
       std::vector<std::string> c;
 
       // 手工按制表符拆分一行。i 是当前字段起点，q 是下一个分隔符位置。
@@ -241,23 +289,42 @@ class StoreService : public Os2Service {
         if (q == line.size()) break;
       }
 
-      // R 行恰好两列；A 行恰好七列。列数不符的损坏行会被忽略，不让服务崩溃。
-      if (c.size() == 2 && c[0] == "R") {
-        rollback_point_ = c[1];
-      } else if (c.size() == 7 && c[0] == "A") {
-        // strtoull 把文件中的十进制时间字符串恢复为 uint64_t。
-        artifacts_[c[1]] = Artifact{c[1], c[2], c[3], c[4], c[5],
-                                    std::strtoull(c[6].c_str(), nullptr, 10)};
+      if (c.size() == 7 && c[0] == "A") {
+        std::string id = c[1], version = c[2], sha256 = c[3], sbom_ref = c[4], status = c[5];
+        if (encoded_v2 &&
+            (!decode_field(c[1], id) || !decode_field(c[2], version) ||
+             !decode_field(c[3], sha256) || !decode_field(c[4], sbom_ref) ||
+             !decode_field(c[5], status)))
+          continue;
+        if (id.empty() || version.empty()) continue;
+        artifacts_[ArtifactKey{id, version}] =
+            Artifact{id, version, sha256, sbom_ref, status,
+                     std::strtoull(c[6].c_str(), nullptr, 10)};
+        // V1 文件每个 ID 只有一条记录；先建立默认指针，V2 的 C 行会在后面覆盖。
+        current_versions_[id] = version;
+      } else if (c.size() == 3 && c[0] == "C" && encoded_v2) {
+        std::string id;
+        std::string version;
+        if (!decode_field(c[1], id) || !decode_field(c[2], version)) continue;
+        if (artifacts_.find(ArtifactKey{id, version}) != artifacts_.end())
+          current_versions_[id] = version;
+      } else if (c.size() == 2 && c[0] == "R") {
+        std::string rollback = c[1];
+        if (encoded_v2 && !decode_field(c[1], rollback)) continue;
+        rollback_point_ = rollback;
       }
     }
     if (!artifacts_.empty())
       log().info("store_restored", std::to_string(artifacts_.size()) + " artifacts from " + path);
   }
 
+  using ArtifactKey = std::pair<std::string, std::string>;
   // verifier_：当前发布准入校验链；unique_ptr 表示由 StoreService 独占其生命周期。
   std::unique_ptr<IArtifactVerifier> verifier_;
-  // artifacts_：内存制品目录，键是 artifact_id，值是完整制品元数据。
-  std::map<std::string, Artifact> artifacts_;
+  // artifacts_：以 (artifact_id, version) 为键，保留同一 ID 的多个版本。
+  std::map<ArtifactKey, Artifact> artifacts_;
+  // current_versions_：现有仅按 ID 查询和激活接口所使用的当前版本指针。
+  std::map<std::string, std::string> current_versions_;
   // rollback_point_：最近记录的回滚目标 id。
   std::string rollback_point_;
   // state_dirty_：内存是否发生过尚未持久化的修改。

@@ -222,3 +222,95 @@ OS2_TEST(store_state_persists_and_restores_f07) {
   }
   std::remove(path.c_str());
 }
+
+OS2_TEST(multiple_versions_are_indexed_and_restored_independently) {
+  const std::string path = "/tmp/os2_store_multiversion_test.tsv";
+  std::remove(path.c_str());
+  Config cfg;
+  cfg.set("store.persist_path", path);
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    GrayscaleStore s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(s.init() && s.start());
+    auto publish_version = [&](const std::string& version, const std::string& content) {
+      auto reply = ctx.buses.mgmt->request(
+          topics::ArtifactPublish,
+          Msg{"A", {{"artifact_id", "qt.pkg.multi"}, {"version", version},
+                    {"sha256", ArtifactSealer::seal(content)},
+                    {"sbom_ref", "sbom://" + version}}},
+          100);
+      OS2_ASSERT(reply && reply->get("accepted") == "true");
+    };
+    publish_version("1.0", "v1");
+    publish_version("2.0", "v2");
+    OS2_ASSERT_EQ(s.find("qt.pkg.multi")->version, std::string("2.0"));
+    OS2_ASSERT_EQ(s.find("qt.pkg.multi", "1.0")->sha256, ArtifactSealer::seal("v1"));
+    OS2_ASSERT_EQ(s.find("qt.pkg.multi", "2.0")->sha256, ArtifactSealer::seal("v2"));
+    s.stop();
+  }
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    GrayscaleStore s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(s.init() && s.start());
+    OS2_ASSERT_EQ(s.find("qt.pkg.multi")->version, std::string("2.0"));
+    OS2_ASSERT(s.find("qt.pkg.multi", "1.0").has_value());
+    OS2_ASSERT(s.find("qt.pkg.multi", "2.0").has_value());
+  }
+  std::remove(path.c_str());
+}
+
+OS2_TEST(persisted_fields_cannot_inject_tsv_records) {
+  const std::string path = "/tmp/os2_store_tsv_injection_test.tsv";
+  std::remove(path.c_str());
+  const std::string injected_id = "qt.pkg.injected";
+  const std::string malicious_sbom =
+      "sbom://safe\nA\t" + injected_id + "\t9.9\t" + ArtifactSealer::seal("fake") +
+      "\tsbom://fake\tactivated\t0";
+  Config cfg;
+  cfg.set("store.persist_path", path);
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    GrayscaleStore s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(s.init() && s.start());
+    auto reply = ctx.buses.mgmt->request(
+        topics::ArtifactPublish,
+        Msg{"A", {{"artifact_id", "qt.pkg.safe"}, {"version", "1.0"},
+                  {"sha256", ArtifactSealer::seal("safe")}, {"sbom_ref", malicious_sbom}}},
+        100);
+    OS2_ASSERT(reply && reply->get("accepted") == "true");
+    s.stop();
+  }
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    GrayscaleStore s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(s.init() && s.start());
+    const auto safe = s.find("qt.pkg.safe", "1.0");
+    OS2_ASSERT(safe.has_value());
+    OS2_ASSERT_EQ(safe->sbom_ref, malicious_sbom);
+    OS2_ASSERT(!s.find(injected_id).has_value());
+  }
+  std::remove(path.c_str());
+}
+
+OS2_TEST(legacy_v1_state_file_remains_readable) {
+  const std::string path = "/tmp/os2_store_legacy_v1_test.tsv";
+  std::remove(path.c_str());
+  const std::string digest = ArtifactSealer::seal("legacy");
+  {
+    std::ofstream out(path);
+    out << "A\tqt.pkg.legacy\t1.2\t" << digest
+        << "\tsbom://legacy\tactivated\t123\n"
+        << "R\tqt.pkg.legacy\n";
+  }
+  Config cfg;
+  cfg.set("store.persist_path", path);
+  ServiceContext ctx{BusPair::make_inproc(), cfg};
+  GrayscaleStore s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(s.init() && s.start());
+  const auto restored = s.find("qt.pkg.legacy", "1.2");
+  OS2_ASSERT(restored.has_value());
+  OS2_ASSERT_EQ(restored->sha256, digest);
+  OS2_ASSERT_EQ(restored->sbom_ref, std::string("sbom://legacy"));
+  OS2_ASSERT_EQ(s.find("qt.pkg.legacy")->version, std::string("1.2"));
+  std::remove(path.c_str());
+}
