@@ -25,6 +25,7 @@
 #pragma once
 
 // C/C++ 标准库依赖：文件读写、键值容器、智能指针、字符串和动态数组。
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -96,7 +97,8 @@ class StoreService : public Os2Service {
 
     // 恢复历史状态
     // 商店服务会把制品数据、激活版本持久化保存到数据库，服务启动时把制品数据加载回内存
-    restore_state();  // F-07 D2：制品/激活态跨重启（灰度中断后可恢复）
+    if (!restore_state()) return false;  // 索引损坏时失败关闭，不带病启动。
+    if (!on_state_restored()) return false;  // 派生存储后端核对文件仓与索引。
 
     // serve(topic, handler) 表示：收到对应主题的请求时，同步调用 handler 并返回 Msg。
     // 告诉总线，如果收到这个主题的消息就交割对应函数处理
@@ -124,6 +126,13 @@ class StoreService : public Os2Service {
   // 派生类重写此函数即可换用更严格的校验链，StoreService 的发布流程无需修改。
   virtual std::unique_ptr<IArtifactVerifier> make_verifier() {
     return std::make_unique<DigestVerifier>();
+  }
+  virtual bool on_state_restored() { return true; }
+  std::vector<Artifact> registered_artifacts() const {
+    std::vector<Artifact> result;
+    result.reserve(artifacts_.size());
+    for (const auto& entry : artifacts_) result.push_back(entry.second);
+    return result;
   }
   // 制品状态改为 activated 后调用。基类不做额外操作，灰度商店在这里启动分批发布。
   // 灰度：分批、小范围试上线新版本
@@ -267,17 +276,35 @@ class StoreService : public Os2Service {
     return true;
   }
 
-  void restore_state() {
+  bool restore_state() {
     const std::string path = config().get("store.persist_path");
-    if (path.empty()) return;
+    if (path.empty()) return true;
     std::ifstream f(path);
 
     // 首次运行时文件可能不存在，这不是故障，按空商店继续启动。
-    if (!f) return;
+    if (!f) return true;
     std::string line;
     bool encoded_v2 = false;
+    bool saw_record = false;
+    std::size_t line_number = 0;
+    auto fail = [&](const std::string& reason) {
+      artifacts_.clear();
+      current_versions_.clear();
+      rollback_point_.clear();
+      log().warn("store_restore_failed",
+                 path + ":" + std::to_string(line_number) + ": " + reason);
+      return false;
+    };
     while (std::getline(f, line)) {
-      if (line == "V\t2") { encoded_v2 = true; continue; }
+      ++line_number;
+      if (line.empty()) continue;
+      if (line == "V\t2") {
+        if (saw_record || encoded_v2) return fail("misplaced or duplicate V2 header");
+        encoded_v2 = true;
+        saw_record = true;
+        continue;
+      }
+      saw_record = true;
       std::vector<std::string> c;
 
       // 手工按制表符拆分一行。i 是当前字段起点，q 是下一个分隔符位置。
@@ -295,27 +322,51 @@ class StoreService : public Os2Service {
             (!decode_field(c[1], id) || !decode_field(c[2], version) ||
              !decode_field(c[3], sha256) || !decode_field(c[4], sbom_ref) ||
              !decode_field(c[5], status)))
-          continue;
-        if (id.empty() || version.empty()) continue;
-        artifacts_[ArtifactKey{id, version}] =
+          return fail("invalid hex field in artifact record");
+        if (id.empty() || version.empty()) return fail("empty artifact id or version");
+        errno = 0;
+        char* end = nullptr;
+        const auto published = std::strtoull(c[6].c_str(), &end, 10);
+        if (errno != 0 || end == c[6].c_str() || *end != '\0')
+          return fail("invalid published timestamp");
+        const auto inserted = artifacts_.emplace(
+            ArtifactKey{id, version},
             Artifact{id, version, sha256, sbom_ref, status,
-                     std::strtoull(c[6].c_str(), nullptr, 10)};
+                     static_cast<std::uint64_t>(published)});
+        if (!inserted.second) return fail("duplicate artifact id and version");
         // V1 文件每个 ID 只有一条记录；先建立默认指针，V2 的 C 行会在后面覆盖。
-        current_versions_[id] = version;
+        if (!encoded_v2) current_versions_[id] = version;
       } else if (c.size() == 3 && c[0] == "C" && encoded_v2) {
         std::string id;
         std::string version;
-        if (!decode_field(c[1], id) || !decode_field(c[2], version)) continue;
-        if (artifacts_.find(ArtifactKey{id, version}) != artifacts_.end())
-          current_versions_[id] = version;
+        if (!decode_field(c[1], id) || !decode_field(c[2], version))
+          return fail("invalid hex field in current-version record");
+        if (artifacts_.find(ArtifactKey{id, version}) == artifacts_.end())
+          return fail("current version points to a missing artifact");
+        if (!current_versions_.emplace(id, version).second)
+          return fail("duplicate current-version record");
       } else if (c.size() == 2 && c[0] == "R") {
         std::string rollback = c[1];
-        if (encoded_v2 && !decode_field(c[1], rollback)) continue;
+        if (encoded_v2 && !decode_field(c[1], rollback))
+          return fail("invalid hex field in rollback record");
+        if (!rollback_point_.empty()) return fail("duplicate rollback record");
         rollback_point_ = rollback;
+      } else {
+        return fail("unknown or malformed record");
+      }
+    }
+    if (!f.eof()) return fail("cannot read complete state file");
+    if (encoded_v2) {
+      for (const auto& entry : artifacts_) {
+        const auto& artifact = entry.second;
+        const auto current = current_versions_.find(artifact.artifact_id);
+        if (current == current_versions_.end())
+          return fail("artifact has no current-version record");
       }
     }
     if (!artifacts_.empty())
       log().info("store_restored", std::to_string(artifacts_.size()) + " artifacts from " + path);
+    return true;
   }
 
   using ArtifactKey = std::pair<std::string, std::string>;

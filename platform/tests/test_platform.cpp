@@ -6,6 +6,7 @@
 #include <map>
 
 #include "os2/platform/addressing.hpp"
+#include "os2/platform/hash.hpp"
 #include "os2/platform/msg_validator.hpp"
 #include "os2/platform/platform.hpp"
 #include "os2/platform/testing.hpp"
@@ -399,6 +400,17 @@ OS2_TEST(service_chain_formal_msgspec_positive_truncation_and_wrong_type) {
           {"completed_nodes", "n"}}};
   OS2_ASSERT_EQ(std::string(feedback.check(fb)->code),
                 std::string(errc::MSG_TYPE_REJECTED));
+}
+
+OS2_TEST(sha256_stream_matches_one_shot_across_chunk_boundaries) {
+  const std::string content = std::string(63, 'a') + "bc" + std::string(4097, 'z');
+  hash::Sha256Stream stream;
+  stream.update(content.data(), 1);
+  stream.update(content.data() + 1, 63);
+  stream.update(content.data() + 64, content.size() - 64);
+  OS2_ASSERT_EQ(hash::hex(stream.finalize()), hash::sha256_hex(content));
+  OS2_ASSERT_EQ(hash::sha256_hex("abc"),
+                std::string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
 }
 
 int main() { return os2::testing::run_all(); }
