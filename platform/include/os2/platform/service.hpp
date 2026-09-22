@@ -28,47 +28,73 @@ namespace os2 {
 // 生命周期状态机（服务目录/门户可见；对齐服务治理"生命周期事件"口径）
 enum class ServiceState { Created, Initialized, Registered, Running, DegradedState, Stopped };
 
-inline const char* to_string(ServiceState s) {
+inline const char* to_string(ServiceState s) {//日志和消息只能传字符串，因此需要把枚举转成文字。
   switch (s) {
-    case ServiceState::Created: return "created";
-    case ServiceState::Initialized: return "initialized";
-    case ServiceState::Registered: return "registered";
+    case ServiceState::Created: return "created";//刚创建出来
+    case ServiceState::Initialized: return "initialized";//完成初始化
+    case ServiceState::Registered: return "registered";//已经注册到服务框架
     case ServiceState::Running: return "running";
-    case ServiceState::DegradedState: return "degraded";
+    case ServiceState::DegradedState: return "degraded";//降级状态
     default: return "stopped";
   }
 }
 
-// 服务身份与上下文 —— 框架注入，模块只读
+// 服务身份与上下文 —— 框架注入，模块只读(服务对象)
 struct ServiceIdentity {
   std::string service_id;   // 如 os2.core.scheduler
   std::string version;      // 如 0.1.0
-  Domain domain{Domain::Compute};
-  std::string node_id;      // 部署节点
+  Domain domain{Domain::Compute};//所属域（Domain::Hmi`、`Domain::Compute`）(采控域，计算域，人机交互域)
+  std::string node_id;      // 部署节点（core-01）
   std::string instance_id;  // 实例 ID（框架生成）
 };
 
+// 服务运行时可以使用哪些外部能力
 struct ServiceContext {
-  BusPair buses;
-  Config config;
+  BusPair buses;//包含管理总线 `mgmt` 和业务总线 `biz（消息通道）
+  Config config;//保存服务配置项（数据库地址、超时时间、最大连接数）
 };
 
 // -----------------------------------------------------------------------------
 // Os2Service — 框架基类
+// 定义了所有 OS2 服务共同使用的父类 `Os2Service`。统一处理：
+// - 服务生命周期：初始化、启动、周期运行、停止。
+// - 向注册中心注册服务。
+// - 定期发送心跳。
+// - 注册中心恢复后自动重新注册。
+// - 健康状态切换。
+// - 输出事件、指标和日志。
+// - 向子类提供管理总线、业务总线和配置。
+
+// 应用商店的继承关系是：
+// Os2Service
+//     ↓ 继承
+// StoreService
+//     ↓ 继承
+// GrayscaleStore
+//     ↓ 继承
+// ReceivingStore
+
+// `StoreService` 不需要重新实现注册、心跳和日志，只需要重写 `on_init()`、`on_stop()` 等扩展点。
+
 // -----------------------------------------------------------------------------
 class Os2Service {
  public:
-  Os2Service(ServiceIdentity id, ServiceContext ctx)
+  Os2Service(ServiceIdentity id, ServiceContext ctx)//构造函数，创建一个服务对象（服务身份和配置）
       : id_(std::move(id)), ctx_(std::move(ctx)) {
     if (id_.instance_id.empty()) id_.instance_id = gen_id("inst");
     logger_ = Logger(id_.service_id, id_.instance_id, to_string(id_.domain), id_.node_id);
   }
-  virtual ~Os2Service() = default;
+  virtual ~Os2Service() = default;//允许通过父类指针安全删除子类对象。`virtual` 很重要，否则子类析构可能不会执行。
+
 
   // ---- 生命周期（框架驱动，模块不重写这三个入口，只重写 on_* 扩展点）----
   bool init() {
-    if (state_ != ServiceState::Created) return false;
+    if (state_ != ServiceState::Created) return false;//调用前要求： 状态必须是 `Created`。同一对象不能重复初始化。
     // 注册收敛（M0.9/ADR-0008）：订阅注册中心纪元广播——纪元变化 = 注册中心重启/目录丢失，
+    // 注册中心职责：
+    // 1、登记，各服务上线，把信息注册给它
+    // 2、查通讯录，别的服务来查询这个服务有哪些活着的实例
+    // 3、推送变更--纪元广播
     // 全员立即重注册；框架内建，模块无感知。
     mgmt().subscribe(topics::RegistryAnnounce, [this](const Msg& m) {
       const std::string epoch = m.get("epoch");

@@ -64,10 +64,11 @@ class DigestVerifier : public IArtifactVerifier {
 class StoreService : public Os2Service {
  public:
   // id 和 ctx 交给父类保存。std::move 表示转移对象内容，避免不必要的复制。
-  StoreService(ServiceIdentity id, ServiceContext ctx)
+  StoreService(ServiceIdentity id, ServiceContext ctx)//构造函数，构造应用商店服务对象
       : Os2Service(std::move(id), std::move(ctx)) {}
 
-  // 按制品 id 查询内存中的登记记录。
+
+  // 按制品 id 查询内存中的制品登记记录，返回制品副本
   // optional 表示“可能有结果，也可能没有”，调用方必须先检查 has_value()。
   std::optional<Artifact> find(const std::string& id) const {
     auto it = artifacts_.find(id);
@@ -75,33 +76,40 @@ class StoreService : public Os2Service {
     return it->second;
   }
 
- protected:
+ protected://本类和子类可以调用，外部类不能调用
   // ---------------------------------------------------------------------------
   // 生命周期与扩展点
   // ---------------------------------------------------------------------------
   // init() 由 Os2Service 提供；init() 内部会回调这里的 on_init()。
   // 初始化阶段完成三件事：创建校验器、恢复状态、注册消息处理函数。
-  bool on_init() override {
-    // 虚函数调用允许派生类决定实际使用哪一种校验器。
-    verifier_ = make_verifier();
+  bool on_init() override {//重写父类Os2Service服务的初始化操作
+
+    // 虚函数调用允许派生类决定实际使用哪一种校验器。（目前有3个）
+    verifier_ = make_verifier();//创建校验器
+
+    // 恢复历史状态
+    // 商店服务会把制品数据、激活版本持久化保存到数据库，服务启动时把制品数据加载回内存
     restore_state();  // F-07 D2：制品/激活态跨重启（灰度中断后可恢复）
 
     // serve(topic, handler) 表示：收到对应主题的请求时，同步调用 handler 并返回 Msg。
+    // 告诉总线，如果收到这个主题的消息就交割对应函数处理
     // [this] 让 lambda 能访问当前 StoreService 对象；m 是收到的请求消息。
+    // 注册 `ArtifactPublish` 处理器。
     mgmt().serve(topics::ArtifactPublish, [this](const Msg& m) { return handle_publish(m); });
+    // 注册 `ActivationCommand` 处理器。
     mgmt().serve(topics::ActivationCommand, [this](const Msg& m) { return handle_activation(m); });
     return true;
   }
 
-  // stop() 时强制尝试保存一次，降低尚未到周期落盘时间就退出造成的数据丢失。
+  // stop() 在停止时强制尝试保存一次，降低尚未到周期落盘时间就退出造成的数据丢失。
   void on_stop() override { persist_state(true); }
 
   // F-07（R0 §4-1 耐久等级 D2=尽力落盘，节拍聚合）：制品登记与激活态落盘——
   // store.persist_path 非空启用；缺省空=存量零变化。派生类 on_tick 需调本方法。
   void persist_tick(std::uint64_t now) {
     // 未到配置的落盘周期就直接返回，把多次状态变化合并成一次磁盘写入。
-    if (now - last_persist_ms_ < config().get_u64("store.persist_ms", 1000)) return;
-    last_persist_ms_ = now;
+    if (now - last_persist_ms_ < config().get_u64("store.persist_ms", 1000)) return;//默认保存周期为 1000ms
+    last_persist_ms_ = now;//更新 `last_persist_ms_`；保存成功时清除 `state_dirty_`
     persist_state(false);
   }
 
@@ -111,6 +119,7 @@ class StoreService : public Os2Service {
     return std::make_unique<DigestVerifier>();
   }
   // 制品状态改为 activated 后调用。基类不做额外操作，灰度商店在这里启动分批发布。
+  // 灰度：分批、小范围试上线新版本
   virtual void on_activated(const Artifact&) {}  // 灰度推进钩子
 
  private:
