@@ -173,11 +173,19 @@ class FilesystemArtifactVerifier final : public IArtifactVerifier {
       return false;
     }
 
-    const std::filesystem::path source =
+    std::filesystem::path source =
         source_override.empty()
             ? std::filesystem::path(incoming_dir_) /
                   (artifact.artifact_id + "-" + artifact.version + ".artifact")
             : source_override;
+    // 兼容旧的同节点暂存约定：调用方发送 X.Y 时文件名仍可能使用 X.Y，
+    // 而索引与仓库目录已经统一为 X.Y.0。
+    if (source_override.empty() && !std::filesystem::exists(source) &&
+        artifact.version.size() > 2 && artifact.version.compare(artifact.version.size() - 2, 2, ".0") == 0) {
+      const auto short_version = artifact.version.substr(0, artifact.version.size() - 2);
+      source = std::filesystem::path(incoming_dir_) /
+               (artifact.artifact_id + "-" + short_version + ".artifact");
+    }
     const std::filesystem::path destination = std::filesystem::path(repository_dir_) /
                                               artifact.artifact_id / artifact.version /
                                               "artifact.bin";
@@ -375,6 +383,9 @@ class ReceivingStore final : public GrayscaleStore {
     std::string version;
     std::string sha256;
     std::string sbom_ref;
+    std::string image_digest;
+    std::string format;
+    std::string source;
     std::filesystem::path temporary;
     int fd{-1};
     std::uint64_t total_bytes{0};
@@ -480,8 +491,12 @@ class ReceivingStore final : public GrayscaleStore {
     if (uploads_.size() >= config().get_u64("store.max_upload_sessions", 32))
       return upload_rejected("ArtifactUploadPrepareReply", "too many active upload sessions");
 
-    Artifact artifact{m.get("artifact_id"), m.get("version"), m.get("sha256"),
-                      m.get("sbom_ref"), "published", 0};
+    std::string normalized_version;
+    if (!normalize_semver(m.get("version"), normalized_version))
+      return upload_rejected("ArtifactUploadPrepareReply", "version must be SemVer X.Y or X.Y.Z");
+    Artifact artifact{m.get("artifact_id"), normalized_version, m.get("sha256"),
+                      m.get("sbom_ref"), "published", 0, m.get("sha256"),
+                      m.get("image_digest"), m.get("format"), m.get("source")};
     Sha256FormatVerifier format;
     std::string reason;
     if (!format.verify(artifact, reason) ||
@@ -505,6 +520,9 @@ class ReceivingStore final : public GrayscaleStore {
     session->version = std::move(artifact.version);
     session->sha256 = artifact_fs::normalize_hex(std::move(artifact.sha256));
     session->sbom_ref = std::move(artifact.sbom_ref);
+    session->image_digest = std::move(artifact.image_digest);
+    session->format = std::move(artifact.format);
+    session->source = std::move(artifact.source);
     session->temporary = name.data();
     session->fd = fd;
     session->total_bytes = *total;
@@ -597,7 +615,11 @@ class ReceivingStore final : public GrayscaleStore {
         Msg{"ArtifactPublish", {{"artifact_id", session->artifact_id},
                                  {"version", session->version},
                                  {"sha256", session->sha256},
-                                 {"sbom_ref", session->sbom_ref}}});
+                                 {"package_sha256", session->sha256},
+                                 {"sbom_ref", session->sbom_ref},
+                                 {"image_digest", session->image_digest},
+                                 {"format", session->format},
+                                 {"source", session->source}}});
     cleanup();
     if (published.get("accepted") != "true")
       return upload_rejected("ArtifactUploadCommitReply", published.get("reason", "artifact publish rejected"));

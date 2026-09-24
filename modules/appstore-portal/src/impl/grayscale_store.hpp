@@ -11,7 +11,9 @@
 
 #include <array>
 
+#include <cerrno>
 #include <cctype>
+#include <cstdlib>
 
 #include "os2/platform/hash.hpp"
 #include "impl/signature_verifier.hpp"
@@ -40,7 +42,22 @@ class Sha256FormatVerifier : public IArtifactVerifier {
     if (a.sha256.size() != 64) { reason = "sha256 must be 64 hex chars"; return false; }
     for (char c : a.sha256)
       if (!std::isxdigit(static_cast<unsigned char>(c))) { reason = "sha256 not hex"; return false; }
-    if (a.version.empty()) { reason = "version required"; return false; }
+    std::string normalized;
+    if (!normalize_semver(a.version, normalized)) {
+      reason = "version must be SemVer X.Y or X.Y.Z";
+      return false;
+    }
+    if (a.format == "oci") {
+      if (a.image_digest.size() != 71 || a.image_digest.rfind("sha256:", 0) != 0) {
+        reason = "oci artifact requires image_digest sha256:<64 hex>";
+        return false;
+      }
+      for (std::size_t i = 7; i < a.image_digest.size(); ++i)
+        if (!std::isxdigit(static_cast<unsigned char>(a.image_digest[i]))) {
+          reason = "image_digest is not sha256 hex";
+          return false;
+        }
+    }
     return true;
   }
 };
@@ -81,6 +98,37 @@ class GrayscaleStore : public StoreService {
         config().get("store.verify_script", "tools/verify_artifact.sh"));
     return std::make_unique<SignatureArtifactVerifier>(std::move(inner), std::move(sig), true);
   }
+  std::vector<std::pair<std::string, std::string>> persistent_extension_state() const override {
+    if (!in_flight_) return {};
+    return {{"rollout.in_flight", "true"}, {"rollout.artifact_id", cur_id_},
+            {"rollout.version", cur_ver_}, {"rollout.batch_idx", std::to_string(batch_idx_)},
+            {"rollout.batch_start_ms", std::to_string(batch_start_)}};
+  }
+  bool restore_extension_state(const std::string& key, const std::string& value) override {
+    if (key == "rollout.in_flight") {
+      in_flight_ = value == "true";
+      return value == "true" || value == "false";
+    }
+    if (key == "rollout.artifact_id") { cur_id_ = value; return true; }
+    if (key == "rollout.version") { cur_ver_ = value; return true; }
+    auto parse = [](const std::string& input, std::uint64_t& output) {
+      if (input.empty()) return false;
+      char* end = nullptr;
+      errno = 0;
+      const auto parsed = std::strtoull(input.c_str(), &end, 10);
+      if (errno != 0 || end == input.c_str() || *end != '\0') return false;
+      output = parsed;
+      return true;
+    };
+    if (key == "rollout.batch_idx") {
+      std::uint64_t parsed = 0;
+      if (!parse(value, parsed) || parsed >= kBatches.size()) return false;
+      batch_idx_ = static_cast<std::size_t>(parsed);
+      return true;
+    }
+    if (key == "rollout.batch_start_ms") return parse(value, batch_start_);
+    return false;
+  }
   void on_activated(const Artifact& a) override {
     if (!staged_) {
       for (int pct : kBatches) push_batch(a.artifact_id, a.version, pct);
@@ -96,6 +144,7 @@ class GrayscaleStore : public StoreService {
   }
 
   void on_tick(std::uint64_t now) override {
+    deployment_tick(now);
     persist_tick(now);  // F-07 D2：制品/激活态节拍落盘（先于灰度早退，不受其短路）
     if (!in_flight_ || now - batch_start_ < config().get_u64("store.rollout_step_ms", 2000)) return;
     ++batch_idx_;

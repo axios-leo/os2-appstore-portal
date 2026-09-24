@@ -27,7 +27,7 @@ namespace os2 {
 // ---------------------------------------------------------------------------
 // 契约版本（生成自 contracts/VERSION）——OS2-API 冻结基线，页面/接口回显用真值
 // ---------------------------------------------------------------------------
-inline constexpr const char* kContractVersion = "1.23.0";
+inline constexpr const char* kContractVersion = "1.24.0";
 
 // ---------------------------------------------------------------------------
 // 数据字典枚举（生成自 data_dictionary.yaml enums.*.cpp_type）
@@ -126,6 +126,8 @@ inline constexpr const char* ArtifactUploadPrepare     = "os2.mgmt.store.artifac
 inline constexpr const char* ArtifactUploadChunk       = "os2.mgmt.store.artifact.upload.chunk";    // req/rep
 inline constexpr const char* ArtifactUploadCommit      = "os2.mgmt.store.artifact.upload.commit";   // req/rep
 inline constexpr const char* ArtifactUploadAbort       = "os2.mgmt.store.artifact.upload.abort";    // req/rep
+inline constexpr const char* ArtifactDeploy            = "os2.mgmt.store.artifact.deploy";          // req/rep
+inline constexpr const char* ArtifactDeployReport      = "os2.mgmt.store.artifact.deploy.report";   // pub
 inline constexpr const char* ActivationCommand         = "os2.mgmt.store.activation";               // req/rep
 // 执行管理器
 inline constexpr const char* ProcessReport             = "os2.mgmt.exec.process";                   // pub（RFC-0017：EM 与服务进程共同上报；running 只能由 reporter=service 置位——EM 只知道 fork 成功）
@@ -292,12 +294,31 @@ inline constexpr const char* const kTok_processAction[] = {"start", "stop", "res
 inline constexpr const char* const kTok_processReporter[] = {"em", "service", nullptr};
 inline constexpr const char* const kTok_processState[] = {"planned", "starting", "running", "stopping", "exited", "failed", nullptr};
 
+inline constexpr Field kFields_ArtifactPublish_req[] = {
+  {"artifact_id", Kind::String, false, false, nullptr},
+  {"version", Kind::String, false, false, nullptr},
+  {"sha256", Kind::String, false, false, nullptr},
+  {"package_sha256", Kind::String, true, false, nullptr},
+  {"image_digest", Kind::String, true, false, nullptr},
+  {"format", Kind::String, true, false, nullptr},
+  {"source", Kind::String, true, false, nullptr},
+  {"sbom_ref", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactPublish_rep[] = {
+  {"accepted", Kind::String, false, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+};
+
 inline constexpr Field kFields_ArtifactUploadPrepare_req[] = {
   {"artifact_id", Kind::String, false, false, nullptr},
   {"version", Kind::String, false, false, nullptr},
   {"sha256", Kind::String, false, false, nullptr},
   {"total_bytes", Kind::Number, false, false, nullptr},
   {"sbom_ref", Kind::String, true, false, nullptr},
+  {"image_digest", Kind::String, true, false, nullptr},
+  {"format", Kind::String, true, false, nullptr},
+  {"source", Kind::String, true, false, nullptr},
 };
 
 inline constexpr Field kFields_ArtifactUploadPrepare_rep[] = {
@@ -335,6 +356,43 @@ inline constexpr Field kFields_ArtifactUploadAbort_req[] = {
 inline constexpr Field kFields_ArtifactUploadAbort_rep[] = {
   {"accepted", Kind::String, false, false, nullptr},
   {"reason", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactDeploy_req[] = {
+  {"deployment_id", Kind::String, false, false, nullptr},
+  {"action", Kind::String, false, false, nullptr},
+  {"artifact_id", Kind::String, false, false, nullptr},
+  {"version", Kind::String, false, false, nullptr},
+  {"package_uri", Kind::String, true, false, nullptr},
+  {"package_sha256", Kind::String, false, false, nullptr},
+  {"image_digest", Kind::String, true, false, nullptr},
+  {"format", Kind::String, false, false, nullptr},
+  {"target_node", Kind::String, false, false, nullptr},
+  {"instance_id", Kind::String, false, false, nullptr},
+  {"mode", Kind::String, false, false, nullptr},
+  {"fetch_required", Kind::String, false, false, nullptr},
+  {"trace_id", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactDeploy_rep[] = {
+  {"accepted", Kind::String, false, false, nullptr},
+  {"reason_code", Kind::String, false, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+};
+
+inline constexpr Field kFields_ArtifactDeployReport_pub[] = {
+  {"deployment_id", Kind::String, false, false, nullptr},
+  {"artifact_id", Kind::String, false, false, nullptr},
+  {"version", Kind::String, false, false, nullptr},
+  {"target_node", Kind::String, false, false, nullptr},
+  {"instance_id", Kind::String, false, false, nullptr},
+  {"stage", Kind::String, false, false, nullptr},
+  {"observed_image_digest", Kind::String, true, false, nullptr},
+  {"reporter", Kind::String, false, false, nullptr},
+  {"timestamp", Kind::Number, false, false, nullptr},
+  {"reason_code", Kind::String, true, false, nullptr},
+  {"reason", Kind::String, true, false, nullptr},
+  {"trace_id", Kind::String, true, false, nullptr},
 };
 
 inline constexpr Field kFields_ProcessReport_pub[] = {
@@ -585,7 +643,9 @@ inline constexpr Field kFields_ProgramControlCommand_req[] = {
 };
 
 inline constexpr TopicSpec kMsgSpecs[] = {
-  {"ArtifactUploadPrepare", "req", kFields_ArtifactUploadPrepare_req, 5},
+  {"ArtifactPublish", "req", kFields_ArtifactPublish_req, 8},
+  {"ArtifactPublish", "rep", kFields_ArtifactPublish_rep, 2},
+  {"ArtifactUploadPrepare", "req", kFields_ArtifactUploadPrepare_req, 8},
   {"ArtifactUploadPrepare", "rep", kFields_ArtifactUploadPrepare_rep, 4},
   {"ArtifactUploadChunk", "req", kFields_ArtifactUploadChunk_req, 3},
   {"ArtifactUploadChunk", "rep", kFields_ArtifactUploadChunk_rep, 3},
@@ -593,6 +653,9 @@ inline constexpr TopicSpec kMsgSpecs[] = {
   {"ArtifactUploadCommit", "rep", kFields_ArtifactUploadCommit_rep, 2},
   {"ArtifactUploadAbort", "req", kFields_ArtifactUploadAbort_req, 1},
   {"ArtifactUploadAbort", "rep", kFields_ArtifactUploadAbort_rep, 2},
+  {"ArtifactDeploy", "req", kFields_ArtifactDeploy_req, 13},
+  {"ArtifactDeploy", "rep", kFields_ArtifactDeploy_rep, 3},
+  {"ArtifactDeployReport", "pub", kFields_ArtifactDeployReport_pub, 12},
   {"ProcessReport", "pub", kFields_ProcessReport_pub, 9},
   {"ProcessControl", "req", kFields_ProcessControl_req, 3},
   {"ProcessControl", "rep", kFields_ProcessControl_rep, 3},

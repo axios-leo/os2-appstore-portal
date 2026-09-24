@@ -3,7 +3,8 @@
 - **Owner（人类审批）：** `@os2/owner-store`
 - **定位：** 支撑软件工厂更新、灰度回滚、可视化操作与证据导出；把 OS 状态转为可操作界面。
 - **契约面：** ArtifactUploadPrepare / ArtifactUploadChunk / ArtifactUploadCommit /
-  ArtifactUploadAbort / ArtifactPublish / ActivationCommand；制品记录、回滚点。
+  ArtifactUploadAbort / ArtifactPublish / ActivationCommand / ArtifactDeploy /
+  ArtifactDeployReport；制品记录、目标激活态与回滚点。
 - **M0.5 状态：** 框架类就位（`src/store_service.hpp`，契约主题已接线，桩可运行、单测通过）。
 - **可授权 AI 的任务：** 制品发布流水线、灰度策略、前端组件、可视化、单测。
 - **规约源：** 受控库《架构说明》§8.8、制品仓/应用商店口径。
@@ -61,3 +62,32 @@ SHA-256 复算、大小限制、同版本不可变检查，并原子写入：
 SHA-256；校验通过后以“不覆盖”语义提交。同版本目标已存在时只允许摘要相同的幂等
 重试。配置状态索引后，服务启动会逐项核对仓库文件存在性、常规文件类型和摘要；索引
 损坏、文件缺失或摘要不一致均拒绝启动。未开启 GC 时，孤儿文件和临时文件只记录告警。
+
+## D2 部署闭环（opt-in）
+
+设置 `store.deployment_enabled=true` 后，`ActivationCommand` 不再直接把索引状态改为
+`activated`。服务先通过 `ArtifactDeploy` 将规范化版本、包摘要、OCI 镜像摘要、目标、
+实例和更新策略交给承载端；同步回复只表示受理，命令当前状态为 `deploying`。只有收到
+关联字段全部匹配、`reporter=service`、`stage=running` 且实际镜像摘要一致的
+`ArtifactDeployReport`，才确认激活成功。拒绝、超时、失败或摘要不一致均保持失败状态。
+
+版本接收 `X.Y` 或 `X.Y.Z`，索引统一保存为 `X.Y.Z`，最新版本按 SemVer 比较。OCI 制品
+必须同时登记包摘要和 `sha256:<64 hex>` 镜像摘要。更新策略行为如下：
+
+- `PRELOADED`：不发送包引用、不增加取件计数，由承载端核对预置镜像摘要；
+- `DOWNLOAD_AND_CACHE`：未命中缓存时取件，后续复用；
+- `UPDATE_AND_CACHE`：选择最高 SemVer，只在目标没有该版本缓存时取件；
+- `ALWAYS_DOWNLOAD`：每次激活都重新取件。
+
+部署任务、缓存事实、取件计数、每目标激活版本和回滚版本随 V3 状态文件持久化。重启后
+未终态任务使用原 `deployment_id` 重新发送，要求承载端按该字段幂等处理。
+
+相关配置：
+
+- `store.default_target`、`store.default_instance`：命令未显式提供时的部署目标；
+- `store.default_update_mode`：缺省 `DOWNLOAD_AND_CACHE`；
+- `store.deploy_accept_timeout_ms`：等待承载受理的超时，缺省 500 ms；
+- `store.deploy_terminal_timeout_ms`：等待运行终态的超时，缺省 30 s。
+
+新公共主题仍需集成负责人完成契约联审；本模块测试使用管理总线模拟承载端，不能替代
+真实 containerd/K8S 后端的 D3 联调证据。

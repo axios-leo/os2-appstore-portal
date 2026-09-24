@@ -37,7 +37,7 @@ OS2_TEST(activation_denied_without_policy) {
   StoreService s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "hmi-01", ""}, ctx};
   OS2_ASSERT(s.init() && s.start());
   ctx.buses.mgmt->request(topics::ArtifactPublish,
-      Msg{"ArtifactPublish", {{"artifact_id", "app-y"}, {"version", "1"}, {"sha256", "z"}}}, 100);
+      Msg{"ArtifactPublish", {{"artifact_id", "app-y"}, {"version", "1.0"}, {"sha256", "z"}}}, 100);
   Command act{gen_id("cmd"), "app-y", "activate", "{}", "someone", "ctx", 0, "t"};
   auto r = ctx.buses.mgmt->request(topics::ActivationCommand, to_msg(act), 100);
   OS2_ASSERT(r && !reply_from(*r).ok());

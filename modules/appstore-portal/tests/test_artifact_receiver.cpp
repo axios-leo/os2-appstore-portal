@@ -85,7 +85,10 @@ Msg prepare_upload(ServiceContext& ctx, const std::string& id, const std::string
                                                 {"version", version},
                                                 {"sha256", digest.empty() ? ArtifactSealer::seal(content) : digest},
                                                 {"total_bytes", std::to_string(content.size())},
-                                                {"sbom_ref", "sbom://remote"}}});
+                                                {"sbom_ref", "sbom://remote"},
+                                                {"image_digest", "sha256:" + std::string(64, 'd')},
+                                                {"format", "oci"},
+                                                {"source", "factory-remote"}}});
 }
 
 Msg send_chunk(ServiceContext& ctx, const std::string& upload_id, std::uint64_t offset,
@@ -150,7 +153,7 @@ OS2_TEST(rejects_missing_oversized_and_unsafe_version_inputs) {
 
   Msg unsafe = publish(ctx, "os2.pkg.bad", "../1", ArtifactSealer::seal("x"));
   OS2_ASSERT_EQ(unsafe.get("accepted"), std::string("false"));
-  OS2_ASSERT(unsafe.get("reason").find("version has illegal char") != std::string::npos);
+  OS2_ASSERT(unsafe.get("reason").find("version") != std::string::npos);
 }
 
 OS2_TEST(retry_is_idempotent_and_existing_version_cannot_be_replaced) {
@@ -201,6 +204,10 @@ OS2_TEST(cross_node_upload_streams_chunks_and_commits_without_shared_staging) {
                                 Msg{"ArtifactUploadCommit", {{"upload_id", upload_id}}});
   OS2_ASSERT_EQ(committed.get("accepted"), std::string("true"));
   OS2_ASSERT(store.find("os2.pkg.remote", "3.1.4").has_value());
+  OS2_ASSERT_EQ(store.find("os2.pkg.remote", "3.1.4")->image_digest,
+                std::string("sha256:") + std::string(64, 'd'));
+  OS2_ASSERT_EQ(store.find("os2.pkg.remote", "3.1.4")->source,
+                std::string("factory-remote"));
   OS2_ASSERT(!std::filesystem::exists(f.incoming / "os2.pkg.remote-3.1.4.artifact"));
 
   const auto stored = f.repository / "os2.pkg.remote" / "3.1.4" / "artifact.bin";
@@ -249,7 +256,7 @@ OS2_TEST(upload_commit_rejects_incomplete_or_digest_mismatch_and_cleans_session)
   auto store = make_store(ctx);
   OS2_ASSERT(store.init() && store.start());
 
-  Msg incomplete = prepare_upload(ctx, "os2.pkg.partial", "1", "abcd");
+  Msg incomplete = prepare_upload(ctx, "os2.pkg.partial", "1.0", "abcd");
   OS2_ASSERT_EQ(send_chunk(ctx, incomplete.get("upload_id"), 0, "ab").get("accepted"),
                 std::string("true"));
   Msg incomplete_commit = request(
@@ -257,7 +264,7 @@ OS2_TEST(upload_commit_rejects_incomplete_or_digest_mismatch_and_cleans_session)
       Msg{"ArtifactUploadCommit", {{"upload_id", incomplete.get("upload_id")}}});
   OS2_ASSERT_EQ(incomplete_commit.get("accepted"), std::string("false"));
 
-  Msg mismatch = prepare_upload(ctx, "os2.pkg.mismatch", "1", "actual",
+  Msg mismatch = prepare_upload(ctx, "os2.pkg.mismatch", "1.0", "actual",
                                 ArtifactSealer::seal("different"));
   OS2_ASSERT_EQ(send_chunk(ctx, mismatch.get("upload_id"), 0, "actual").get("accepted"),
                 std::string("true"));
@@ -278,12 +285,12 @@ OS2_TEST(upload_abort_and_restart_cleanup_remove_interrupted_sessions) {
     ServiceContext ctx{BusPair::make_inproc(), cfg};
     auto store = make_store(ctx);
     OS2_ASSERT(store.init() && store.start());
-    const Msg aborted = prepare_upload(ctx, "os2.pkg.abort", "1", "bytes");
+    const Msg aborted = prepare_upload(ctx, "os2.pkg.abort", "1.0", "bytes");
     OS2_ASSERT_EQ(request(ctx, topics::ArtifactUploadAbort,
                           Msg{"ArtifactUploadAbort", {{"upload_id", aborted.get("upload_id")}}})
                       .get("accepted"),
                   std::string("true"));
-    const Msg interrupted = prepare_upload(ctx, "os2.pkg.interrupted", "1", "bytes");
+    const Msg interrupted = prepare_upload(ctx, "os2.pkg.interrupted", "1.0", "bytes");
     OS2_ASSERT_EQ(send_chunk(ctx, interrupted.get("upload_id"), 0, "by").get("accepted"),
                   std::string("true"));
     // 不调用 stop：模拟上传过程中进程掉电，析构只关闭 fd，留下启动恢复证据。
@@ -369,7 +376,7 @@ OS2_TEST(startup_fails_closed_when_indexed_file_is_missing) {
                   std::string("true"));
     store.stop();
   }
-  std::filesystem::remove(f.repository / "os2.pkg.missing-after-restart" / "1.0" /
+  std::filesystem::remove(f.repository / "os2.pkg.missing-after-restart" / "1.0.0" /
                           "artifact.bin");
   ServiceContext restarted_ctx{BusPair::make_inproc(), cfg};
   auto restarted = make_store(restarted_ctx);
@@ -393,7 +400,7 @@ OS2_TEST(startup_fails_closed_when_repository_content_is_corrupted) {
     store.stop();
   }
   {
-    std::ofstream out(f.repository / "os2.pkg.corrupted" / "1.0" / "artifact.bin",
+    std::ofstream out(f.repository / "os2.pkg.corrupted" / "1.0.0" / "artifact.bin",
                       std::ios::binary | std::ios::trunc);
     out << "modified after indexing";
   }
@@ -433,7 +440,7 @@ OS2_TEST(startup_gc_recovers_crash_window_and_removes_temp_files) {
                   std::string("true"));
     // 故意不 stop()：模拟制品已提交、索引尚未持久化时掉电。
   }
-  const auto version_dir = f.repository / "os2.pkg.crash" / "1.0";
+  const auto version_dir = f.repository / "os2.pkg.crash" / "1.0.0";
   const auto orphan = version_dir / "artifact.bin";
   const auto stale_temp = version_dir / ".artifact.bin.tmp.crash";
   { std::ofstream out(stale_temp); out << "stale"; }

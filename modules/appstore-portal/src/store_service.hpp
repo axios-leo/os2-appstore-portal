@@ -27,9 +27,11 @@
 // C/C++ 标准库依赖：文件读写、键值容器、智能指针、字符串和动态数组。
 #include <cerrno>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -39,6 +41,20 @@
 #include "os2/platform/platform.hpp"
 
 namespace os2::store {
+
+struct DeploymentRecord {
+  std::string deployment_id;
+  std::string action;
+  std::string artifact_id;
+  std::string version;
+  std::string target_node;
+  std::string instance_id;
+  std::string mode;
+  std::string state;
+  std::string trace_id;
+  bool fetch_required{false};
+  std::uint64_t created_ms{0};
+};
 
 // -----------------------------------------------------------------------------
 // DigestVerifier — 默认的最低限度校验器
@@ -79,9 +95,28 @@ class StoreService : public Os2Service {
 
   // 精确查询某个版本；同一制品的历史版本不会因新版本发布而被覆盖。
   std::optional<Artifact> find(const std::string& id, const std::string& version) const {
-    const auto it = artifacts_.find(ArtifactKey{id, version});
+    std::string normalized;
+    const std::string& key_version = normalize_semver(version, normalized) ? normalized : version;
+    auto it = artifacts_.find(ArtifactKey{id, key_version});
+    if (it == artifacts_.end() && key_version != version)
+      it = artifacts_.find(ArtifactKey{id, version});  // V1/V2 旧索引兼容。
     if (it == artifacts_.end()) return std::nullopt;
     return it->second;
+  }
+
+  std::string active_version(const std::string& id, const std::string& target) const {
+    const auto it = active_versions_.find(target_key(id, target));
+    return it == active_versions_.end() ? std::string{} : it->second;
+  }
+
+  std::string deployment_state(const std::string& deployment_id) const {
+    const auto it = deployments_.find(deployment_id);
+    return it == deployments_.end() ? std::string{} : it->second.state;
+  }
+
+  std::uint64_t fetch_count(const std::string& id, const std::string& target) const {
+    const auto it = fetch_counts_.find(target_key(id, target));
+    return it == fetch_counts_.end() ? 0 : it->second;
   }
 
  protected://本类和子类可以调用，外部类不能调用
@@ -107,6 +142,11 @@ class StoreService : public Os2Service {
     mgmt().serve(topics::ArtifactPublish, [this](const Msg& m) { return handle_publish(m); });
     // 注册 `ActivationCommand` 处理器。
     mgmt().serve(topics::ActivationCommand, [this](const Msg& m) { return handle_activation(m); });
+    if (deployment_enabled()) {
+      mgmt().subscribe(topics::ArtifactDeployReport,
+                       [this](const Msg& m) { handle_deploy_report(m); });
+      resume_pending_deployments();
+    }
     return true;
   }
 
@@ -122,12 +162,34 @@ class StoreService : public Os2Service {
     persist_state(false);
   }
 
+  void deployment_tick(std::uint64_t now) {
+    if (!deployment_enabled()) return;
+    const auto timeout = config().get_u64("store.deploy_terminal_timeout_ms", 30000);
+    for (auto& entry : deployments_) {
+      auto& task = entry.second;
+      if (task.state == "activated" || task.state == "rolled-back" || task.state == "failed" ||
+          task.state == "rejected" || task.state == "timeout")
+        continue;
+      if (timeout == 0 || now - task.created_ms > timeout) {
+        task.state = "timeout";
+        auto artifact = artifacts_.find(ArtifactKey{task.artifact_id, task.version});
+        if (artifact != artifacts_.end()) artifact->second.status = "deployment-failed";
+        state_dirty_ = true;
+        log().warn("artifact_deploy_timeout", task.deployment_id);
+      }
+    }
+  }
+
   // ---- 扩展点 ----
   // 派生类重写此函数即可换用更严格的校验链，StoreService 的发布流程无需修改。
   virtual std::unique_ptr<IArtifactVerifier> make_verifier() {
     return std::make_unique<DigestVerifier>();
   }
   virtual bool on_state_restored() { return true; }
+  virtual std::vector<std::pair<std::string, std::string>> persistent_extension_state() const {
+    return {};
+  }
+  virtual bool restore_extension_state(const std::string&, const std::string&) { return false; }
   // 派生接收器完成跨节点字节传输后，复用与 ArtifactPublish 完全相同的准入和登记链路。
   // 保持 handle_publish 私有，避免派生类绕过该唯一入口直接修改索引。
   Msg publish_artifact(const Msg& m) { return handle_publish(m); }
@@ -148,8 +210,14 @@ class StoreService : public Os2Service {
   Msg handle_publish(const Msg& m) {
     // 从通用 Msg 的字段表中取值，组装成强类型 Artifact。
     // 新制品初始状态固定为 published，published_ms 记录当前发布时间。
-    Artifact a{m.get("artifact_id"), m.get("version"), m.get("sha256"),
-               m.get("sbom_ref"), "published", now_ms()};
+    std::string version;
+    if (!normalize_semver(m.get("version"), version))
+      return Msg{"ArtifactPublishReply",
+                 {{"accepted", "false"}, {"reason", "version must be SemVer X.Y or X.Y.Z"}}};
+    const std::string package_sha = m.get("package_sha256", m.get("sha256"));
+    Artifact a{m.get("artifact_id"), version, package_sha,
+               m.get("sbom_ref"), "published", now_ms(), package_sha,
+               m.get("image_digest"), m.get("format"), m.get("source")};
     std::string reason;
 
     // 两级准入：artifact_id 必须存在，并且当前校验链必须全部通过。
@@ -160,7 +228,9 @@ class StoreService : public Os2Service {
     // 用 (artifact_id, version) 作为唯一键，保留同一制品的全部历史版本。
     // current_versions_ 保持旧接口语义：find(id) 和激活命令仍指向最近发布版本。
     artifacts_[ArtifactKey{a.artifact_id, a.version}] = a;
-    current_versions_[a.artifact_id] = a.version;
+    const auto current = current_versions_.find(a.artifact_id);
+    if (current == current_versions_.end() || semver_less(current->second, a.version))
+      current_versions_[a.artifact_id] = a.version;
 
     // 只标记“状态已改变”，真正写盘由 persist_tick() 或 on_stop() 聚合执行。
     state_dirty_ = true;
@@ -174,10 +244,29 @@ class StoreService : public Os2Service {
   Msg handle_activation(const Msg& m) {
     // 把通用消息解析为统一 Command；主要使用 target_id、command_type、operator_id。
     Command c = command_from(m);  // command_type: activate / rollback
-    const auto current = current_versions_.find(c.target_id);
-    if (current == current_versions_.end())
-      return to_msg(Reply::failure(c, errc::SVC_NOT_REGISTERED, "unknown-artifact"));
-    auto it = artifacts_.find(ArtifactKey{c.target_id, current->second});
+    const std::string target = m.get("target_node", config().get("store.default_target", "local"));
+    const std::string instance =
+        m.get("instance_id", config().get("store.default_instance", c.target_id));
+    std::string selected_version = m.get("version");
+    if (!selected_version.empty()) {
+      std::string normalized;
+      if (!normalize_semver(selected_version, normalized))
+        return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "invalid-version"));
+      selected_version = normalized;
+    }
+    if (c.command_type == "rollback" && deployment_enabled()) {
+      const auto rollback = rollback_versions_.find(target_key(c.target_id, target));
+      if (rollback == rollback_versions_.end())
+        return to_msg(Reply::failure(c, errc::SVC_NOT_REGISTERED, "no-rollback-version"));
+      selected_version = rollback->second;
+    }
+    if (selected_version.empty()) {
+      const auto current = current_versions_.find(c.target_id);
+      if (current == current_versions_.end())
+        return to_msg(Reply::failure(c, errc::SVC_NOT_REGISTERED, "unknown-artifact"));
+      selected_version = current->second;
+    }
+    auto it = artifacts_.find(ArtifactKey{c.target_id, selected_version});
 
     // 只能操作已经发布并登记的制品。Reply::failure 会带统一错误码与当前状态。
     if (it == artifacts_.end())
@@ -192,6 +281,9 @@ class StoreService : public Os2Service {
     auto dec = mgmt().request(topics::PolicyCheck, pc, 500);
     if (!dec || dec->get("allow") != "true")
       return to_msg(Reply::failure(c, errc::SEC_DENIED, it->second.status));
+
+    if (deployment_enabled())
+      return dispatch_deployment(c, m, it->second, target, instance);
 
     if (c.command_type == "activate") {
       // 若该制品原本已激活，则保留它作为回滚点；随后切换状态并触发灰度钩子。
@@ -211,27 +303,253 @@ class StoreService : public Os2Service {
     return to_msg(Reply::success(c, it->second.status));
   }
 
+  static std::string target_key(const std::string& id, const std::string& target) {
+    return id + "\n" + target;
+  }
+
+  static std::string cache_key(const Artifact& a, const std::string& target) {
+    return target_key(a.artifact_id, target) + "\n" + a.version;
+  }
+
+  bool deployment_enabled() const {
+    return config().get("store.deployment_enabled", "false") == "true";
+  }
+
+  static bool semver_less(const std::string& left, const std::string& right) {
+    SemVersion a;
+    SemVersion b;
+    std::string ignored;
+    return normalize_semver(left, ignored, &a) && normalize_semver(right, ignored, &b) && a < b;
+  }
+
+  static bool valid_mode(const std::string& mode) {
+    return mode == "PRELOADED" || mode == "UPDATE_AND_CACHE" ||
+           mode == "ALWAYS_DOWNLOAD" || mode == "DOWNLOAD_AND_CACHE";
+  }
+
+  Msg dispatch_deployment(const Command& c, const Msg& original, Artifact& artifact,
+                          const std::string& target, const std::string& instance) {
+    if (c.command_type != "activate" && c.command_type != "rollback")
+      return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, artifact.status));
+    const std::string mode = original.get(
+        "mode", config().get("store.default_update_mode", "DOWNLOAD_AND_CACHE"));
+    if (!valid_mode(mode))
+      return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "invalid-update-mode"));
+    if (target.empty() || instance.empty())
+      return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "missing-deployment-target"));
+    if (artifact.format.empty() || artifact.source.empty() || artifact.package_sha256.empty())
+      return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "incomplete-artifact-metadata"));
+
+    const bool cached = cached_versions_.count(cache_key(artifact, target)) != 0;
+    bool fetch_required = mode == "ALWAYS_DOWNLOAD";
+    if (mode == "DOWNLOAD_AND_CACHE" || mode == "UPDATE_AND_CACHE")
+      fetch_required = !cached;
+    if (mode == "PRELOADED") fetch_required = false;
+
+    DeploymentRecord record{gen_id("deploy"), c.command_type, artifact.artifact_id,
+                            artifact.version, target, instance, mode, "deploying", c.trace_id,
+                            fetch_required, now_ms()};
+    deployments_[record.deployment_id] = record;
+    artifact.status = c.command_type == "rollback" ? "rolling-back" : "deploying";
+    state_dirty_ = true;
+
+    std::string package_uri;
+    if (mode != "PRELOADED") {
+      package_uri = (std::filesystem::path(config().get("store.repository_dir")) /
+                     artifact.artifact_id / artifact.version / "artifact.bin").string();
+    }
+    Msg request{"ArtifactDeploy",
+                {{"deployment_id", record.deployment_id},
+                 {"action", record.action},
+                 {"artifact_id", artifact.artifact_id},
+                 {"version", artifact.version},
+                 {"package_uri", package_uri},
+                 {"package_sha256", artifact.package_sha256.empty() ? artifact.sha256
+                                                                      : artifact.package_sha256},
+                 {"image_digest", artifact.image_digest},
+                 {"format", artifact.format},
+                 {"target_node", target},
+                 {"instance_id", instance},
+                 {"mode", mode},
+                 {"fetch_required", fetch_required ? "true" : "false"},
+                 {"trace_id", c.trace_id}}};
+    auto accepted = mgmt().request(topics::ArtifactDeploy, request,
+                                   config().get_u64("store.deploy_accept_timeout_ms", 500));
+    if (!accepted || accepted->get("accepted") != "true") {
+      auto& failed = deployments_[record.deployment_id];
+      failed.state = accepted ? "rejected" : "timeout";
+      artifact.status = "deployment-failed";
+      state_dirty_ = true;
+      log().warn("artifact_deploy_rejected",
+                 artifact.artifact_id + "@" + artifact.version + ":" + failed.state);
+      return to_msg(Reply::failure(c, accepted ? errc::WL_SPAWN_FAILED : errc::SCH_E2E_TIMEOUT,
+                                   artifact.status));
+    }
+    if (fetch_required) ++fetch_counts_[target_key(artifact.artifact_id, target)];
+    Reply reply = Reply::success(c, deployments_[record.deployment_id].state);
+    reply.effective_value = record.deployment_id;
+    return to_msg(reply);
+  }
+
+  void handle_deploy_report(const Msg& m) {
+    const auto found = deployments_.find(m.get("deployment_id"));
+    if (found == deployments_.end()) {
+      log().warn("artifact_deploy_report_ignored", "unknown deployment_id");
+      return;
+    }
+    auto& task = found->second;
+    if (task.state == "activated" || task.state == "rolled-back" || task.state == "failed" ||
+        task.state == "rejected" || task.state == "timeout") {
+      log().warn("artifact_deploy_report_ignored", task.deployment_id + ": terminal task");
+      return;
+    }
+    if (m.get("artifact_id") != task.artifact_id || m.get("version") != task.version ||
+        m.get("target_node") != task.target_node || m.get("instance_id") != task.instance_id) {
+      log().warn("artifact_deploy_report_ignored", task.deployment_id + ": correlation mismatch");
+      return;
+    }
+    const std::string stage = m.get("stage");
+    if (stage == "failed") {
+      task.state = "failed";
+      auto it = artifacts_.find(ArtifactKey{task.artifact_id, task.version});
+      if (it != artifacts_.end()) it->second.status = "deployment-failed";
+      state_dirty_ = true;
+      return;
+    }
+    if (stage != "accepted" && stage != "imported" && stage != "starting" &&
+        stage != "running") {
+      log().warn("artifact_deploy_report_ignored", task.deployment_id + ": invalid stage");
+      return;
+    }
+    if (stage != "running") {
+      task.state = stage;
+      state_dirty_ = true;
+      return;
+    }
+    auto artifact = artifacts_.find(ArtifactKey{task.artifact_id, task.version});
+    if (artifact == artifacts_.end() || m.get("reporter") != "service" ||
+        (!artifact->second.image_digest.empty() &&
+         m.get("observed_image_digest") != artifact->second.image_digest)) {
+      task.state = "failed";
+      if (artifact != artifacts_.end()) artifact->second.status = "deployment-failed";
+      state_dirty_ = true;
+      log().warn("artifact_deploy_report_ignored", task.deployment_id + ": runtime evidence mismatch");
+      return;
+    }
+
+    const std::string key = target_key(task.artifact_id, task.target_node);
+    const auto previous = active_versions_.find(key);
+    if (previous != active_versions_.end() && previous->second != task.version) {
+      auto old = artifacts_.find(ArtifactKey{task.artifact_id, previous->second});
+      if (old != artifacts_.end())
+        old->second.status = task.action == "rollback" ? "rolled-back" : "published";
+      rollback_versions_[key] = previous->second;
+    }
+    active_versions_[key] = task.version;
+    cached_versions_.insert(cache_key(artifact->second, task.target_node));
+    artifact->second.status = "activated";
+    task.state = task.action == "rollback" ? "rolled-back" : "activated";
+    state_dirty_ = true;
+    if (task.action == "activate") on_activated(artifact->second);
+    log().info("artifact_runtime_confirmed",
+               task.artifact_id + "@" + task.version + " on " + task.target_node,
+               task.trace_id);
+  }
+
+  void resume_pending_deployments() {
+    for (auto& entry : deployments_) {
+      auto& task = entry.second;
+      if (task.state != "deploying" && task.state != "accepted" &&
+          task.state != "imported" && task.state != "starting")
+        continue;
+      const auto artifact = artifacts_.find(ArtifactKey{task.artifact_id, task.version});
+      if (artifact == artifacts_.end()) continue;
+      std::string package_uri;
+      if (task.mode != "PRELOADED")
+        package_uri = (std::filesystem::path(config().get("store.repository_dir")) /
+                       task.artifact_id / task.version / "artifact.bin").string();
+      Msg request{"ArtifactDeploy",
+                  {{"deployment_id", task.deployment_id},
+                   {"action", task.action},
+                   {"artifact_id", task.artifact_id},
+                   {"version", task.version},
+                   {"package_uri", package_uri},
+                   {"package_sha256", artifact->second.package_sha256},
+                   {"image_digest", artifact->second.image_digest},
+                   {"format", artifact->second.format},
+                   {"target_node", task.target_node},
+                   {"instance_id", task.instance_id},
+                   {"mode", task.mode},
+                   {"fetch_required", task.fetch_required ? "true" : "false"},
+                   {"trace_id", task.trace_id}}};
+      auto accepted = mgmt().request(topics::ArtifactDeploy, request,
+                                     config().get_u64("store.deploy_accept_timeout_ms", 500));
+      if (!accepted || accepted->get("accepted") != "true") {
+        task.state = accepted ? "rejected" : "timeout";
+        auto mutable_artifact = artifacts_.find(ArtifactKey{task.artifact_id, task.version});
+        if (mutable_artifact != artifacts_.end()) mutable_artifact->second.status = "deployment-failed";
+        state_dirty_ = true;
+      } else {
+        log().info("artifact_deploy_resumed", task.deployment_id, task.trace_id);
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // 状态持久化：内存 → 文件
   // ---------------------------------------------------------------------------
-  // V2 状态文件把所有字符串转成十六进制，避免字段中的制表符或换行注入伪造记录。
+  // V3 在 V2 安全编码基础上增加两级摘要、目标激活态、缓存与部署任务。
   void persist_state(bool force) {
     const std::string path = config().get("store.persist_path");
 
     // 未配置路径时关闭持久化；非强制模式下，没有修改也不重复写盘。
     if (path.empty() || (!state_dirty_ && !force)) return;
-    std::string body = "V\t2\n";
+    std::string body = "V\t3\n";
 
     for (const auto& entry : artifacts_) {
       const auto& a = entry.second;
       body += "A\t" + encode_field(a.artifact_id) + '\t' + encode_field(a.version) + '\t' +
               encode_field(a.sha256) + '\t' + encode_field(a.sbom_ref) + '\t' +
-              encode_field(a.status) + '\t' + std::to_string(a.published_ms) + '\n';
+              encode_field(a.status) + '\t' + std::to_string(a.published_ms) + '\t' +
+              encode_field(a.package_sha256) + '\t' + encode_field(a.image_digest) + '\t' +
+              encode_field(a.format) + '\t' + encode_field(a.source) + '\n';
     }
 
     // C 行保存每个 ID 当前指向的版本，兼容只传 artifact_id 的现有激活接口。
     for (const auto& [id, version] : current_versions_)
       body += "C\t" + encode_field(id) + '\t' + encode_field(version) + '\n';
+
+    for (const auto& [key, version] : active_versions_) {
+      const auto split = key.find('\n');
+      body += "T\t" + encode_field(key.substr(0, split)) + '\t' +
+              encode_field(key.substr(split + 1)) + '\t' + encode_field(version) + '\n';
+    }
+    for (const auto& [key, version] : rollback_versions_) {
+      const auto split = key.find('\n');
+      body += "B\t" + encode_field(key.substr(0, split)) + '\t' +
+              encode_field(key.substr(split + 1)) + '\t' + encode_field(version) + '\n';
+    }
+    for (const auto& key : cached_versions_) {
+      const auto first = key.find('\n');
+      const auto second = key.find('\n', first + 1);
+      body += "K\t" + encode_field(key.substr(0, first)) + '\t' +
+              encode_field(key.substr(first + 1, second - first - 1)) + '\t' +
+              encode_field(key.substr(second + 1)) + '\n';
+    }
+    for (const auto& [key, count] : fetch_counts_) {
+      const auto split = key.find('\n');
+      body += "F\t" + encode_field(key.substr(0, split)) + '\t' +
+              encode_field(key.substr(split + 1)) + '\t' + std::to_string(count) + '\n';
+    }
+    for (const auto& [id, d] : deployments_)
+      body += "D\t" + encode_field(id) + '\t' + encode_field(d.action) + '\t' +
+              encode_field(d.artifact_id) + '\t' + encode_field(d.version) + '\t' +
+              encode_field(d.target_node) + '\t' + encode_field(d.instance_id) + '\t' +
+              encode_field(d.mode) + '\t' + encode_field(d.state) + '\t' +
+              encode_field(d.trace_id) + '\t' + (d.fetch_required ? "1" : "0") + '\t' +
+              std::to_string(d.created_ms) + '\n';
+    for (const auto& [key, value] : persistent_extension_state())
+      body += "E\t" + encode_field(key) + '\t' + encode_field(value) + '\n';
 
     // R 行单独保存回滚点，便于 restore_state() 按首列区分记录类型。
     if (!rollback_point_.empty()) body += "R\t" + encode_field(rollback_point_) + '\n';
@@ -287,12 +605,18 @@ class StoreService : public Os2Service {
     // 首次运行时文件可能不存在，这不是故障，按空商店继续启动。
     if (!f) return true;
     std::string line;
-    bool encoded_v2 = false;
+    int format_version = 1;
+    bool saw_header = false;
     bool saw_record = false;
     std::size_t line_number = 0;
     auto fail = [&](const std::string& reason) {
       artifacts_.clear();
       current_versions_.clear();
+      active_versions_.clear();
+      rollback_versions_.clear();
+      cached_versions_.clear();
+      fetch_counts_.clear();
+      deployments_.clear();
       rollback_point_.clear();
       log().warn("store_restore_failed",
                  path + ":" + std::to_string(line_number) + ": " + reason);
@@ -301,9 +625,10 @@ class StoreService : public Os2Service {
     while (std::getline(f, line)) {
       ++line_number;
       if (line.empty()) continue;
-      if (line == "V\t2") {
-        if (saw_record || encoded_v2) return fail("misplaced or duplicate V2 header");
-        encoded_v2 = true;
+      if (line == "V\t2" || line == "V\t3") {
+        if (saw_record || saw_header) return fail("misplaced or duplicate state header");
+        format_version = line == "V\t3" ? 3 : 2;
+        saw_header = true;
         saw_record = true;
         continue;
       }
@@ -319,9 +644,9 @@ class StoreService : public Os2Service {
         if (q == line.size()) break;
       }
 
-      if (c.size() == 7 && c[0] == "A") {
+      if ((c.size() == 7 || (format_version == 3 && c.size() == 11)) && c[0] == "A") {
         std::string id = c[1], version = c[2], sha256 = c[3], sbom_ref = c[4], status = c[5];
-        if (encoded_v2 &&
+        if (format_version >= 2 &&
             (!decode_field(c[1], id) || !decode_field(c[2], version) ||
              !decode_field(c[3], sha256) || !decode_field(c[4], sbom_ref) ||
              !decode_field(c[5], status)))
@@ -332,14 +657,20 @@ class StoreService : public Os2Service {
         const auto published = std::strtoull(c[6].c_str(), &end, 10);
         if (errno != 0 || end == c[6].c_str() || *end != '\0')
           return fail("invalid published timestamp");
+        std::string package_sha = sha256, image_digest, artifact_format, source;
+        if (c.size() == 11 &&
+            (!decode_field(c[7], package_sha) || !decode_field(c[8], image_digest) ||
+             !decode_field(c[9], artifact_format) || !decode_field(c[10], source)))
+          return fail("invalid hex field in artifact metadata");
         const auto inserted = artifacts_.emplace(
             ArtifactKey{id, version},
             Artifact{id, version, sha256, sbom_ref, status,
-                     static_cast<std::uint64_t>(published)});
+                     static_cast<std::uint64_t>(published), package_sha, image_digest,
+                     artifact_format, source});
         if (!inserted.second) return fail("duplicate artifact id and version");
         // V1 文件每个 ID 只有一条记录；先建立默认指针，V2 的 C 行会在后面覆盖。
-        if (!encoded_v2) current_versions_[id] = version;
-      } else if (c.size() == 3 && c[0] == "C" && encoded_v2) {
+        if (format_version == 1) current_versions_[id] = version;
+      } else if (c.size() == 3 && c[0] == "C" && format_version >= 2) {
         std::string id;
         std::string version;
         if (!decode_field(c[1], id) || !decode_field(c[2], version))
@@ -348,9 +679,51 @@ class StoreService : public Os2Service {
           return fail("current version points to a missing artifact");
         if (!current_versions_.emplace(id, version).second)
           return fail("duplicate current-version record");
+      } else if (c.size() == 4 && format_version == 3 &&
+                 (c[0] == "T" || c[0] == "B" || c[0] == "K")) {
+        std::string id, target, version;
+        if (!decode_field(c[1], id) || !decode_field(c[2], target) ||
+            !decode_field(c[3], version))
+          return fail("invalid hex field in target state record");
+        if (artifacts_.find(ArtifactKey{id, version}) == artifacts_.end())
+          return fail("target state points to missing artifact");
+        if (c[0] == "T") active_versions_[target_key(id, target)] = version;
+        if (c[0] == "B") rollback_versions_[target_key(id, target)] = version;
+        if (c[0] == "K") cached_versions_.insert(target_key(id, target) + "\n" + version);
+      } else if (c.size() == 4 && format_version == 3 && c[0] == "F") {
+        std::string id, target;
+        if (!decode_field(c[1], id) || !decode_field(c[2], target))
+          return fail("invalid hex field in fetch record");
+        errno = 0;
+        char* end = nullptr;
+        const auto count = std::strtoull(c[3].c_str(), &end, 10);
+        if (errno != 0 || end == c[3].c_str() || *end != '\0')
+          return fail("invalid fetch count");
+        fetch_counts_[target_key(id, target)] = count;
+      } else if (c.size() == 12 && format_version == 3 && c[0] == "D") {
+        std::string d[9];
+        for (std::size_t i = 0; i < 9; ++i)
+          if (!decode_field(c[i + 1], d[i])) return fail("invalid deployment record field");
+        errno = 0;
+        char* end = nullptr;
+        const auto created = std::strtoull(c[11].c_str(), &end, 10);
+        if (errno != 0 || end == c[11].c_str() || *end != '\0' ||
+            (c[10] != "0" && c[10] != "1"))
+          return fail("invalid deployment record value");
+        if (artifacts_.find(ArtifactKey{d[2], d[3]}) == artifacts_.end())
+          return fail("deployment points to missing artifact");
+        if (!deployments_.emplace(d[0], DeploymentRecord{d[0], d[1], d[2], d[3], d[4],
+                                                          d[5], d[6], d[7], d[8], c[10] == "1",
+                                                          created}).second)
+          return fail("duplicate deployment record");
+      } else if (c.size() == 3 && format_version == 3 && c[0] == "E") {
+        std::string key, value;
+        if (!decode_field(c[1], key) || !decode_field(c[2], value) ||
+            !restore_extension_state(key, value))
+          return fail("invalid extension state record");
       } else if (c.size() == 2 && c[0] == "R") {
         std::string rollback = c[1];
-        if (encoded_v2 && !decode_field(c[1], rollback))
+        if (format_version >= 2 && !decode_field(c[1], rollback))
           return fail("invalid hex field in rollback record");
         if (!rollback_point_.empty()) return fail("duplicate rollback record");
         rollback_point_ = rollback;
@@ -359,7 +732,7 @@ class StoreService : public Os2Service {
       }
     }
     if (!f.eof()) return fail("cannot read complete state file");
-    if (encoded_v2) {
+    if (format_version >= 2) {
       for (const auto& entry : artifacts_) {
         const auto& artifact = entry.second;
         const auto current = current_versions_.find(artifact.artifact_id);
@@ -379,6 +752,13 @@ class StoreService : public Os2Service {
   std::map<ArtifactKey, Artifact> artifacts_;
   // current_versions_：现有仅按 ID 查询和激活接口所使用的当前版本指针。
   std::map<std::string, std::string> current_versions_;
+  // 每个制品/目标的真实运行版本与上一可回滚版本。
+  std::map<std::string, std::string> active_versions_;
+  std::map<std::string, std::string> rollback_versions_;
+  // 缓存事实、取件计数和异步部署任务用于更新策略与恢复证据。
+  std::set<std::string> cached_versions_;
+  std::map<std::string, std::uint64_t> fetch_counts_;
+  std::map<std::string, DeploymentRecord> deployments_;
   // rollback_point_：最近记录的回滚目标 id。
   std::string rollback_point_;
   // state_dirty_：内存是否发生过尚未持久化的修改。

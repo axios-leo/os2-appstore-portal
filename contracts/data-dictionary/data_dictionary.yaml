@@ -79,6 +79,20 @@ fields:
 # 键集/类型 **不新增、不改语义**——仅效力升级；校验 opt-in 逐主题（bus.validate）、
 # 缺省关＝未启用主题行为零变化。type: number 者启用后走严格数值解析（拒静默 0）。
 messages:
+  ArtifactPublish:
+    frozen_ref: "appstore artifact admission protocol v2"
+    req:
+      - { key: artifact_id, type: string, desc: "制品统一标识" }
+      - { key: version, type: string, desc: "SemVer X.Y 或 X.Y.Z" }
+      - { key: sha256, type: string, desc: "兼容字段；完整制品 SHA-256" }
+      - { key: package_sha256, type: string, desc: "完整制品 SHA-256", opt: true }
+      - { key: image_digest, type: string, desc: "OCI image-manifest 摘要", opt: true }
+      - { key: format, type: string, desc: "制品格式", opt: true }
+      - { key: source, type: string, desc: "制品来源标识", opt: true }
+      - { key: sbom_ref, type: string, desc: "SBOM 引用", opt: true }
+    rep:
+      - { key: accepted, type: string, desc: "true/false" }
+      - { key: reason, type: string, desc: "拒绝原因", opt: true }
   ArtifactUploadPrepare:
     frozen_ref: "appstore artifact transfer protocol v1"
     req:
@@ -87,6 +101,9 @@ messages:
       - { key: sha256, type: string, desc: "完整制品 SHA-256 十六进制摘要" }
       - { key: total_bytes, type: number, desc: "完整制品原始字节数" }
       - { key: sbom_ref, type: string, desc: "SBOM 引用", opt: true }
+      - { key: image_digest, type: string, desc: "OCI image-manifest 摘要 sha256:<64 hex>", opt: true }
+      - { key: format, type: string, desc: "制品格式，如 oci/tar.gz/deb/elf", opt: true }
+      - { key: source, type: string, desc: "制品来源标识", opt: true }
     rep:
       - { key: accepted, type: string, desc: "true/false" }
       - { key: upload_id, type: string, desc: "上传会话标识；接受时返回", opt: true }
@@ -116,6 +133,41 @@ messages:
     rep:
       - { key: accepted, type: string, desc: "true/false" }
       - { key: reason, type: string, desc: "拒绝原因；成功时为空", opt: true }
+  ArtifactDeploy:
+    frozen_ref: "appstore deployment handoff protocol v1"
+    req:
+      - { key: deployment_id, type: string, desc: "部署任务和幂等标识" }
+      - { key: action, type: string, desc: "activate/rollback" }
+      - { key: artifact_id, type: string, desc: "制品统一标识" }
+      - { key: version, type: string, desc: "规范化 SemVer" }
+      - { key: package_uri, type: string, desc: "商店内包引用；PRELOADED 时可为空", opt: true }
+      - { key: package_sha256, type: string, desc: "完整制品 SHA-256" }
+      - { key: image_digest, type: string, desc: "OCI image-manifest 摘要", opt: true }
+      - { key: format, type: string, desc: "制品格式" }
+      - { key: target_node, type: string, desc: "目标节点" }
+      - { key: instance_id, type: string, desc: "目标运行实例" }
+      - { key: mode, type: string, desc: "PRELOADED/UPDATE_AND_CACHE/ALWAYS_DOWNLOAD/DOWNLOAD_AND_CACHE" }
+      - { key: fetch_required, type: string, desc: "true/false" }
+      - { key: trace_id, type: string, desc: "全链路追踪标识", opt: true }
+    rep:
+      - { key: accepted, type: string, desc: "只表示承载端是否受理" }
+      - { key: reason_code, type: string, desc: "稳定错误码" }
+      - { key: reason, type: string, desc: "拒绝原因", opt: true }
+  ArtifactDeployReport:
+    frozen_ref: "appstore deployment handoff protocol v1"
+    pub:
+      - { key: deployment_id, type: string, desc: "部署任务标识" }
+      - { key: artifact_id, type: string, desc: "制品统一标识" }
+      - { key: version, type: string, desc: "实际部署版本" }
+      - { key: target_node, type: string, desc: "目标节点" }
+      - { key: instance_id, type: string, desc: "运行实例" }
+      - { key: stage, type: string, desc: "accepted/imported/starting/running/failed" }
+      - { key: observed_image_digest, type: string, desc: "承载端实际运行镜像摘要", opt: true }
+      - { key: reporter, type: string, desc: "报告方；running 必须为 service" }
+      - { key: timestamp, type: number, desc: "承载端毫秒时间戳" }
+      - { key: reason_code, type: string, desc: "失败错误码", opt: true }
+      - { key: reason, type: string, desc: "失败原因", opt: true }
+      - { key: trace_id, type: string, desc: "全链路追踪标识", opt: true }
   ProcessReport:                        # RFC-0017：进程生命周期上报
     frozen_ref: "RFC-0017 §2.1"
     pub:

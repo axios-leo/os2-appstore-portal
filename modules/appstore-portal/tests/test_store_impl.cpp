@@ -217,7 +217,7 @@ OS2_TEST(store_state_persists_and_restores_f07) {
     auto a = s.find("qt.pkg.app");
     OS2_ASSERT(a.has_value());
     OS2_ASSERT_EQ(a->status, std::string("activated"));   // 激活态跨重启存活
-    OS2_ASSERT_EQ(a->version, std::string("1.0"));
+    OS2_ASSERT_EQ(a->version, std::string("1.0.0"));
     OS2_ASSERT_EQ(a->sbom_ref, std::string("sbom://1"));
   }
   std::remove(path.c_str());
@@ -243,7 +243,7 @@ OS2_TEST(multiple_versions_are_indexed_and_restored_independently) {
     };
     publish_version("1.0", "v1");
     publish_version("2.0", "v2");
-    OS2_ASSERT_EQ(s.find("qt.pkg.multi")->version, std::string("2.0"));
+    OS2_ASSERT_EQ(s.find("qt.pkg.multi")->version, std::string("2.0.0"));
     OS2_ASSERT_EQ(s.find("qt.pkg.multi", "1.0")->sha256, ArtifactSealer::seal("v1"));
     OS2_ASSERT_EQ(s.find("qt.pkg.multi", "2.0")->sha256, ArtifactSealer::seal("v2"));
     s.stop();
@@ -252,7 +252,7 @@ OS2_TEST(multiple_versions_are_indexed_and_restored_independently) {
     ServiceContext ctx{BusPair::make_inproc(), cfg};
     GrayscaleStore s{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
     OS2_ASSERT(s.init() && s.start());
-    OS2_ASSERT_EQ(s.find("qt.pkg.multi")->version, std::string("2.0"));
+    OS2_ASSERT_EQ(s.find("qt.pkg.multi")->version, std::string("2.0.0"));
     OS2_ASSERT(s.find("qt.pkg.multi", "1.0").has_value());
     OS2_ASSERT(s.find("qt.pkg.multi", "2.0").has_value());
   }
@@ -312,5 +312,309 @@ OS2_TEST(legacy_v1_state_file_remains_readable) {
   OS2_ASSERT_EQ(restored->sha256, digest);
   OS2_ASSERT_EQ(restored->sbom_ref, std::string("sbom://legacy"));
   OS2_ASSERT_EQ(s.find("qt.pkg.legacy")->version, std::string("1.2"));
+  std::remove(path.c_str());
+}
+
+namespace {
+const std::string kImageDigest = "sha256:" + std::string(64, 'b');
+
+Config d2_config(const std::string& persist_path = {}) {
+  Config cfg;
+  cfg.set("store.deployment_enabled", "true");
+  cfg.set("store.default_target", "compute-01");
+  cfg.set("store.default_instance", "svc-01");
+  cfg.set("store.repository_dir", "/var/lib/os2/artifacts");
+  if (!persist_path.empty()) cfg.set("store.persist_path", persist_path);
+  return cfg;
+}
+
+Msg publish_d2(ServiceContext& ctx, const std::string& id, const std::string& version,
+               const std::string& format = "oci", const std::string& image = kImageDigest) {
+  auto reply = ctx.buses.mgmt->request(
+      topics::ArtifactPublish,
+      Msg{"ArtifactPublish", {{"artifact_id", id}, {"version", version},
+                              {"sha256", ArtifactSealer::seal(id + version)},
+                              {"image_digest", image}, {"format", format},
+                              {"source", "factory-A"}, {"sbom_ref", "sbom://" + version}}},
+      100);
+  OS2_ASSERT(reply.has_value());
+  return *reply;
+}
+
+Msg activate_d2(ServiceContext& ctx, const std::string& id, const std::string& mode,
+                const std::string& action = "activate", const std::string& version = {}) {
+  Command command{gen_id("cmd"), id, action, "{}", "release", "ctx", 0, gen_id("trace")};
+  Msg request = to_msg(command);
+  request.kv["target_node"] = "compute-01";
+  request.kv["instance_id"] = "svc-01";
+  request.kv["mode"] = mode;
+  if (!version.empty()) request.kv["version"] = version;
+  auto reply = ctx.buses.mgmt->request(topics::ActivationCommand, request, 100);
+  OS2_ASSERT(reply.has_value());
+  return *reply;
+}
+
+void report_running(ServiceContext& ctx, const Msg& activation,
+                    const std::string& id, const std::string& version,
+                    const std::string& image = kImageDigest) {
+  ctx.buses.mgmt->publish(
+      topics::ArtifactDeployReport,
+      Msg{"ArtifactDeployReport", {{"deployment_id", activation.get("effective_value")},
+                                    {"artifact_id", id}, {"version", version},
+                                    {"target_node", "compute-01"},
+                                    {"instance_id", "svc-01"}, {"stage", "running"},
+                                    {"observed_image_digest", image},
+                                    {"reporter", "service"},
+                                    {"timestamp", std::to_string(now_ms())}}});
+}
+}  // namespace
+
+OS2_TEST(d2_semver_metadata_and_latest_selection) {
+  std::string normalized;
+  OS2_ASSERT(os2::store::normalize_semver("1.9", normalized));
+  OS2_ASSERT_EQ(normalized, std::string("1.9.0"));
+  OS2_ASSERT(!os2::store::normalize_semver("1", normalized));
+  OS2_ASSERT(!os2::store::normalize_semver("01.2", normalized));
+  OS2_ASSERT(!os2::store::normalize_semver("1.2.3.4", normalized));
+
+  ServiceContext ctx{BusPair::make_inproc(), Config{}};
+  GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(store.init() && store.start());
+  OS2_ASSERT_EQ(publish_d2(ctx, "qt.pkg.semver", "1.10").get("accepted"), std::string("true"));
+  OS2_ASSERT_EQ(publish_d2(ctx, "qt.pkg.semver", "1.9").get("accepted"), std::string("true"));
+  OS2_ASSERT_EQ(store.find("qt.pkg.semver")->version, std::string("1.10.0"));
+  const auto artifact = store.find("qt.pkg.semver", "1.10");
+  OS2_ASSERT(artifact.has_value());
+  OS2_ASSERT_EQ(artifact->package_sha256, artifact->sha256);
+  OS2_ASSERT_EQ(artifact->image_digest, kImageDigest);
+  OS2_ASSERT_EQ(artifact->source, std::string("factory-A"));
+  OS2_ASSERT_EQ(publish_d2(ctx, "qt.pkg.bad-oci", "1.0", "oci", "").get("accepted"),
+                std::string("false"));
+}
+
+OS2_TEST(d2_activation_requires_correlated_runtime_evidence) {
+  std::vector<Msg> requests;
+  ServiceContext ctx{BusPair::make_inproc(), d2_config()};
+  ctx.buses.mgmt->serve(topics::PolicyCheck,
+      [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+  ctx.buses.mgmt->serve(topics::ArtifactDeploy, [&](const Msg& m) {
+    requests.push_back(m);
+    return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+  });
+  GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(store.init() && store.start());
+  OS2_ASSERT_EQ(publish_d2(ctx, "qt.pkg.runtime", "1.0").get("accepted"), std::string("true"));
+  const Msg activation = activate_d2(ctx, "qt.pkg.runtime", "DOWNLOAD_AND_CACHE");
+  OS2_ASSERT(reply_from(activation).ok());
+  OS2_ASSERT_EQ(reply_from(activation).current_state, std::string("deploying"));
+  OS2_ASSERT_EQ(store.find("qt.pkg.runtime")->status, std::string("deploying"));
+  OS2_ASSERT(store.rollout_log().empty());
+  OS2_ASSERT_EQ(requests.size(), std::size_t{1});
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("true"));
+
+  ctx.buses.mgmt->publish(
+      topics::ArtifactDeployReport,
+      Msg{"ArtifactDeployReport", {{"deployment_id", activation.get("effective_value")},
+                                    {"artifact_id", "qt.pkg.runtime"}, {"version", "1.0.0"},
+                                    {"target_node", "wrong-node"}, {"instance_id", "svc-01"},
+                                    {"stage", "running"}, {"observed_image_digest", kImageDigest},
+                                    {"reporter", "service"}, {"timestamp", "1"}}});
+  OS2_ASSERT_EQ(store.find("qt.pkg.runtime")->status, std::string("deploying"));
+  report_running(ctx, activation, "qt.pkg.runtime", "1.0.0");
+  OS2_ASSERT_EQ(store.find("qt.pkg.runtime")->status, std::string("activated"));
+  OS2_ASSERT_EQ(store.rollout_log().size(), std::size_t{3});
+  OS2_ASSERT_EQ(store.active_version("qt.pkg.runtime", "compute-01"), std::string("1.0.0"));
+}
+
+OS2_TEST(d2_update_modes_produce_distinct_fetch_facts) {
+  std::vector<Msg> requests;
+  ServiceContext ctx{BusPair::make_inproc(), d2_config()};
+  ctx.buses.mgmt->serve(topics::PolicyCheck,
+      [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+  ctx.buses.mgmt->serve(topics::ArtifactDeploy, [&](const Msg& m) {
+    requests.push_back(m);
+    return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+  });
+  GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(store.init() && store.start());
+  publish_d2(ctx, "qt.pkg.policy", "1.9");
+  publish_d2(ctx, "qt.pkg.policy", "1.10");
+
+  Msg first = activate_d2(ctx, "qt.pkg.policy", "DOWNLOAD_AND_CACHE");
+  OS2_ASSERT_EQ(requests.back().get("version"), std::string("1.10.0"));
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("true"));
+  report_running(ctx, first, "qt.pkg.policy", "1.10.0");
+  Msg cached = activate_d2(ctx, "qt.pkg.policy", "DOWNLOAD_AND_CACHE");
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("false"));
+  report_running(ctx, cached, "qt.pkg.policy", "1.10.0");
+  OS2_ASSERT_EQ(store.fetch_count("qt.pkg.policy", "compute-01"), std::uint64_t{1});
+
+  Msg always = activate_d2(ctx, "qt.pkg.policy", "ALWAYS_DOWNLOAD");
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("true"));
+  report_running(ctx, always, "qt.pkg.policy", "1.10.0");
+  OS2_ASSERT_EQ(store.fetch_count("qt.pkg.policy", "compute-01"), std::uint64_t{2});
+
+  Msg no_update = activate_d2(ctx, "qt.pkg.policy", "UPDATE_AND_CACHE");
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("false"));
+  report_running(ctx, no_update, "qt.pkg.policy", "1.10.0");
+  publish_d2(ctx, "qt.pkg.policy", "1.11");
+  Msg update = activate_d2(ctx, "qt.pkg.policy", "UPDATE_AND_CACHE");
+  OS2_ASSERT_EQ(requests.back().get("version"), std::string("1.11.0"));
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("true"));
+  report_running(ctx, update, "qt.pkg.policy", "1.11.0");
+  OS2_ASSERT_EQ(store.fetch_count("qt.pkg.policy", "compute-01"), std::uint64_t{3});
+
+  Msg preloaded = activate_d2(ctx, "qt.pkg.policy", "PRELOADED");
+  OS2_ASSERT_EQ(requests.back().get("fetch_required"), std::string("false"));
+  OS2_ASSERT(requests.back().get("package_uri").empty());
+  report_running(ctx, preloaded, "qt.pkg.policy", "1.11.0");
+  OS2_ASSERT_EQ(store.fetch_count("qt.pkg.policy", "compute-01"), std::uint64_t{3});
+}
+
+OS2_TEST(d2_reject_timeout_and_digest_mismatch_never_activate) {
+  {
+    ServiceContext ctx{BusPair::make_inproc(), d2_config()};
+    ctx.buses.mgmt->serve(topics::PolicyCheck,
+        [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+    ctx.buses.mgmt->serve(topics::ArtifactDeploy, [](const Msg&) {
+      return Msg{"ArtifactDeployReply", {{"accepted", "false"},
+                                          {"reason_code", errc::WL_SPAWN_FAILED},
+                                          {"reason", "backend unavailable"}}};
+    });
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    publish_d2(ctx, "qt.pkg.reject", "1.0");
+    const Msg rejected = activate_d2(ctx, "qt.pkg.reject", "ALWAYS_DOWNLOAD");
+    OS2_ASSERT(!reply_from(rejected).ok());
+    OS2_ASSERT_EQ(store.find("qt.pkg.reject")->status, std::string("deployment-failed"));
+    OS2_ASSERT(store.active_version("qt.pkg.reject", "compute-01").empty());
+  }
+  {
+    Config cfg = d2_config();
+    cfg.set("store.deploy_terminal_timeout_ms", "1");
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    ctx.buses.mgmt->serve(topics::PolicyCheck,
+        [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+    ctx.buses.mgmt->serve(topics::ArtifactDeploy, [](const Msg&) {
+      return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+    });
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    publish_d2(ctx, "qt.pkg.timeout", "1.0");
+    const Msg pending = activate_d2(ctx, "qt.pkg.timeout", "ALWAYS_DOWNLOAD");
+    store.tick(now_ms() + 100);
+    OS2_ASSERT_EQ(store.deployment_state(pending.get("effective_value")), std::string("timeout"));
+    OS2_ASSERT_EQ(store.find("qt.pkg.timeout")->status, std::string("deployment-failed"));
+  }
+  {
+    ServiceContext ctx{BusPair::make_inproc(), d2_config()};
+    ctx.buses.mgmt->serve(topics::PolicyCheck,
+        [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+    ctx.buses.mgmt->serve(topics::ArtifactDeploy, [](const Msg&) {
+      return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+    });
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    publish_d2(ctx, "qt.pkg.digest", "1.0");
+    const Msg pending = activate_d2(ctx, "qt.pkg.digest", "ALWAYS_DOWNLOAD");
+    report_running(ctx, pending, "qt.pkg.digest", "1.0.0", "sha256:" + std::string(64, 'c'));
+    OS2_ASSERT_EQ(store.deployment_state(pending.get("effective_value")), std::string("failed"));
+    OS2_ASSERT_EQ(store.find("qt.pkg.digest")->status, std::string("deployment-failed"));
+    OS2_ASSERT(store.active_version("qt.pkg.digest", "compute-01").empty());
+  }
+}
+
+OS2_TEST(d2_rollback_waits_for_previous_version_runtime_report) {
+  ServiceContext ctx{BusPair::make_inproc(), d2_config()};
+  ctx.buses.mgmt->serve(topics::PolicyCheck,
+      [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+  ctx.buses.mgmt->serve(topics::ArtifactDeploy, [](const Msg&) {
+    return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+  });
+  GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(store.init() && store.start());
+  publish_d2(ctx, "qt.pkg.rollback", "1.0");
+  Msg v1 = activate_d2(ctx, "qt.pkg.rollback", "DOWNLOAD_AND_CACHE");
+  report_running(ctx, v1, "qt.pkg.rollback", "1.0.0");
+  publish_d2(ctx, "qt.pkg.rollback", "2.0");
+  Msg v2 = activate_d2(ctx, "qt.pkg.rollback", "UPDATE_AND_CACHE");
+  report_running(ctx, v2, "qt.pkg.rollback", "2.0.0");
+  OS2_ASSERT_EQ(store.active_version("qt.pkg.rollback", "compute-01"), std::string("2.0.0"));
+
+  Msg rollback = activate_d2(ctx, "qt.pkg.rollback", "DOWNLOAD_AND_CACHE", "rollback");
+  OS2_ASSERT(reply_from(rollback).ok());
+  OS2_ASSERT_EQ(store.active_version("qt.pkg.rollback", "compute-01"), std::string("2.0.0"));
+  OS2_ASSERT_EQ(store.find("qt.pkg.rollback", "1.0")->status, std::string("rolling-back"));
+  report_running(ctx, rollback, "qt.pkg.rollback", "1.0.0");
+  OS2_ASSERT_EQ(store.active_version("qt.pkg.rollback", "compute-01"), std::string("1.0.0"));
+  OS2_ASSERT_EQ(store.find("qt.pkg.rollback", "1.0")->status, std::string("activated"));
+  OS2_ASSERT_EQ(store.find("qt.pkg.rollback", "2.0")->status, std::string("rolled-back"));
+}
+
+OS2_TEST(d2_pending_deployment_is_restored_and_resent_idempotently) {
+  const std::string path = "/tmp/os2_store_d2_resume.tsv";
+  std::remove(path.c_str());
+  std::string deployment_id;
+  {
+    ServiceContext ctx{BusPair::make_inproc(), d2_config(path)};
+    ctx.buses.mgmt->serve(topics::PolicyCheck,
+        [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+    ctx.buses.mgmt->serve(topics::ArtifactDeploy, [](const Msg&) {
+      return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+    });
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    publish_d2(ctx, "qt.pkg.resume", "1.0");
+    Msg activation = activate_d2(ctx, "qt.pkg.resume", "ALWAYS_DOWNLOAD");
+    deployment_id = activation.get("effective_value");
+    store.stop();
+  }
+  std::vector<std::string> resumed;
+  {
+    ServiceContext ctx{BusPair::make_inproc(), d2_config(path)};
+    ctx.buses.mgmt->serve(topics::ArtifactDeploy, [&](const Msg& m) {
+      resumed.push_back(m.get("deployment_id"));
+      return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+    });
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    OS2_ASSERT_EQ(resumed.size(), std::size_t{1});
+    OS2_ASSERT_EQ(resumed.front(), deployment_id);
+    OS2_ASSERT_EQ(store.deployment_state(deployment_id), std::string("deploying"));
+  }
+  std::remove(path.c_str());
+}
+
+OS2_TEST(d2_staged_rollout_progress_survives_restart) {
+  const std::string path = "/tmp/os2_store_d2_rollout_resume.tsv";
+  std::remove(path.c_str());
+  Config cfg = d2_config(path);
+  cfg.set("store.rollout_mode", "staged");
+  cfg.set("store.rollout_step_ms", "1000");
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    ctx.buses.mgmt->serve(topics::PolicyCheck,
+        [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+    ctx.buses.mgmt->serve(topics::ArtifactDeploy, [](const Msg&) {
+      return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+    });
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    publish_d2(ctx, "qt.pkg.rollout-resume", "1.0");
+    Msg activation = activate_d2(ctx, "qt.pkg.rollout-resume", "DOWNLOAD_AND_CACHE");
+    report_running(ctx, activation, "qt.pkg.rollout-resume", "1.0.0");
+    OS2_ASSERT(store.rollout_in_flight());
+    OS2_ASSERT_EQ(store.rollout_log().size(), std::size_t{1});
+    store.stop();
+  }
+  {
+    ServiceContext ctx{BusPair::make_inproc(), cfg};
+    GrayscaleStore store{ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+    OS2_ASSERT(store.init() && store.start());
+    OS2_ASSERT(store.rollout_in_flight());
+    store.tick(now_ms() + 2000);
+    OS2_ASSERT_EQ(store.rollout_log().size(), std::size_t{1});
+    OS2_ASSERT(store.rollout_log().front().find("50%") != std::string::npos);
+  }
   std::remove(path.c_str());
 }
