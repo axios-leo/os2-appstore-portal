@@ -392,6 +392,26 @@ OS2_TEST(d2_semver_metadata_and_latest_selection) {
                 std::string("false"));
 }
 
+OS2_TEST(d2_same_version_metadata_is_immutable_and_retry_is_idempotent) {
+  ServiceContext ctx{BusPair::make_inproc(), Config{}};
+  GrayscaleStore store{
+      ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(store.init() && store.start());
+
+  const Msg first = publish_d2(ctx, "qt.pkg.immutable", "1.0");
+  OS2_ASSERT_EQ(first.get("accepted"), std::string("true"));
+  const Msg retry = publish_d2(ctx, "qt.pkg.immutable", "1.0");
+  OS2_ASSERT_EQ(retry.get("accepted"), std::string("true"));
+
+  const Msg changed = publish_d2(ctx, "qt.pkg.immutable", "1.0", "oci",
+                                 "sha256:" + std::string(64, 'c'));
+  OS2_ASSERT_EQ(changed.get("accepted"), std::string("false"));
+  OS2_ASSERT(changed.get("reason").find("different metadata") != std::string::npos);
+  const auto stored = store.find("qt.pkg.immutable", "1.0");
+  OS2_ASSERT(stored.has_value());
+  OS2_ASSERT_EQ(stored->image_digest, kImageDigest);
+}
+
 OS2_TEST(d2_activation_requires_correlated_runtime_evidence) {
   std::vector<Msg> requests;
   ServiceContext ctx{BusPair::make_inproc(), d2_config()};
@@ -424,6 +444,35 @@ OS2_TEST(d2_activation_requires_correlated_runtime_evidence) {
   OS2_ASSERT_EQ(store.find("qt.pkg.runtime")->status, std::string("activated"));
   OS2_ASSERT_EQ(store.rollout_log().size(), std::size_t{3});
   OS2_ASSERT_EQ(store.active_version("qt.pkg.runtime", "compute-01"), std::string("1.0.0"));
+}
+
+OS2_TEST(d2_rejects_overlapping_deployment_for_same_artifact_and_target) {
+  std::vector<Msg> requests;
+  ServiceContext ctx{BusPair::make_inproc(), d2_config()};
+  ctx.buses.mgmt->serve(topics::PolicyCheck,
+      [](const Msg&) { return Msg{"D", {{"allow", "true"}}}; });
+  ctx.buses.mgmt->serve(topics::ArtifactDeploy, [&](const Msg& m) {
+    requests.push_back(m);
+    return Msg{"ArtifactDeployReply", {{"accepted", "true"}, {"reason_code", errc::OK}}};
+  });
+  GrayscaleStore store{
+      ServiceIdentity{"os2.core.appstore-portal", "0.1.0", Domain::Hmi, "n", ""}, ctx};
+  OS2_ASSERT(store.init() && store.start());
+  publish_d2(ctx, "qt.pkg.serial", "1.0");
+  publish_d2(ctx, "qt.pkg.serial", "2.0");
+
+  const Msg first = activate_d2(ctx, "qt.pkg.serial", "DOWNLOAD_AND_CACHE", "activate", "1.0");
+  OS2_ASSERT(reply_from(first).ok());
+  const Msg overlapping =
+      activate_d2(ctx, "qt.pkg.serial", "DOWNLOAD_AND_CACHE", "activate", "2.0");
+  OS2_ASSERT(!reply_from(overlapping).ok());
+  OS2_ASSERT_EQ(reply_from(overlapping).current_state, std::string("deployment-in-progress"));
+  OS2_ASSERT_EQ(requests.size(), std::size_t{1});
+
+  report_running(ctx, first, "qt.pkg.serial", "1.0.0");
+  const Msg second = activate_d2(ctx, "qt.pkg.serial", "DOWNLOAD_AND_CACHE", "activate", "2.0");
+  OS2_ASSERT(reply_from(second).ok());
+  OS2_ASSERT_EQ(requests.size(), std::size_t{2});
 }
 
 OS2_TEST(d2_update_modes_produce_distinct_fetch_facts) {

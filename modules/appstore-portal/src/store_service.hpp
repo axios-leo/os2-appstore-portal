@@ -225,9 +225,24 @@ class StoreService : public Os2Service {
     if (a.artifact_id.empty() || !verifier_->verify(a, reason))
       return Msg{"ArtifactPublishReply", {{"accepted", "false"}, {"reason", reason}}};
 
+    // 同一 (artifact_id, version) 是不可变制品。完全相同的重试按幂等成功处理，
+    // 但不允许借重复发布改写 SBOM、镜像摘要、格式或来源，也不重置生命周期状态。
+    const ArtifactKey key{a.artifact_id, a.version};
+    const auto existing = artifacts_.find(key);
+    if (existing != artifacts_.end()) {
+      const auto& stored = existing->second;
+      if (stored.sha256 != a.sha256 || stored.package_sha256 != a.package_sha256 ||
+          stored.sbom_ref != a.sbom_ref || stored.image_digest != a.image_digest ||
+          stored.format != a.format || stored.source != a.source)
+        return Msg{"ArtifactPublishReply",
+                   {{"accepted", "false"},
+                    {"reason", "artifact version already exists with different metadata"}}};
+      return Msg{"ArtifactPublishReply", {{"accepted", "true"}}};
+    }
+
     // 用 (artifact_id, version) 作为唯一键，保留同一制品的全部历史版本。
     // current_versions_ 保持旧接口语义：find(id) 和激活命令仍指向最近发布版本。
-    artifacts_[ArtifactKey{a.artifact_id, a.version}] = a;
+    artifacts_.emplace(key, a);
     const auto current = current_versions_.find(a.artifact_id);
     if (current == current_versions_.end() || semver_less(current->second, a.version))
       current_versions_[a.artifact_id] = a.version;
@@ -327,6 +342,11 @@ class StoreService : public Os2Service {
            mode == "ALWAYS_DOWNLOAD" || mode == "DOWNLOAD_AND_CACHE";
   }
 
+  static bool deployment_terminal(const DeploymentRecord& task) {
+    return task.state == "activated" || task.state == "rolled-back" ||
+           task.state == "failed" || task.state == "rejected" || task.state == "timeout";
+  }
+
   Msg dispatch_deployment(const Command& c, const Msg& original, Artifact& artifact,
                           const std::string& target, const std::string& instance) {
     if (c.command_type != "activate" && c.command_type != "rollback")
@@ -339,6 +359,15 @@ class StoreService : public Os2Service {
       return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "missing-deployment-target"));
     if (artifact.format.empty() || artifact.source.empty() || artifact.package_sha256.empty())
       return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "incomplete-artifact-metadata"));
+
+    // active_versions_ 以 (artifact_id, target_node) 为键；同一键只允许一个在途任务。
+    // 否则旧任务的迟到 running 回执可能反向覆盖较新的激活结果。
+    for (const auto& entry : deployments_) {
+      const auto& pending = entry.second;
+      if (pending.artifact_id == artifact.artifact_id && pending.target_node == target &&
+          !deployment_terminal(pending))
+        return to_msg(Reply::failure(c, errc::SCH_CHAIN_INVALID, "deployment-in-progress"));
+    }
 
     const bool cached = cached_versions_.count(cache_key(artifact, target)) != 0;
     bool fetch_required = mode == "ALWAYS_DOWNLOAD";
@@ -398,8 +427,7 @@ class StoreService : public Os2Service {
       return;
     }
     auto& task = found->second;
-    if (task.state == "activated" || task.state == "rolled-back" || task.state == "failed" ||
-        task.state == "rejected" || task.state == "timeout") {
+    if (deployment_terminal(task)) {
       log().warn("artifact_deploy_report_ignored", task.deployment_id + ": terminal task");
       return;
     }
